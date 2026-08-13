@@ -1566,3 +1566,46 @@ pub struct RequestRow {
     pub is_sidechain: bool,
     pub agent_type: Option<String>,
 }
+
+/// One model, as this machine has actually used it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedModelRow {
+    pub model_id: String,
+    pub adapter_id: String,
+    pub requests: i64,
+    pub total_tokens: i64,
+}
+
+/// Every model that appears in recorded usage, busiest first.
+///
+/// This is the list the pricing screen needs. A catalogue of everything a
+/// provider publishes would be longer and less useful: the models that need a
+/// price are the ones that ran here, and on this machine every one of them is
+/// newer than any published price list.
+pub async fn observed_models(pool: &Pool<Sqlite>) -> Result<Vec<ObservedModelRow>> {
+    let rows = sqlx::query(
+        "SELECT model_id,
+                MIN(adapter_id) AS adapter_id,
+                COUNT(*)        AS requests,
+                COALESCE(SUM(input_fresh + cache_read + cache_write_5m + cache_write_1h
+                             + cache_write_unspecified + output_total + unclassified), 0)
+                                AS total_tokens
+           FROM ai_request
+          WHERE model_id IS NOT NULL AND request_kind != 'failed'
+          GROUP BY model_id
+          ORDER BY requests DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(ObservedModelRow {
+                model_id: row.try_get("model_id")?,
+                adapter_id: row.try_get("adapter_id")?,
+                requests: row.try_get("requests")?,
+                total_tokens: row.try_get("total_tokens")?,
+            })
+        })
+        .collect()
+}

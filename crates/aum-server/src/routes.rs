@@ -210,9 +210,11 @@ pub async fn list_tasks(
 pub async fn task_metrics(
     State(state): State<AppState>,
     axum::extract::Path(task_id): axum::extract::Path<uuid::Uuid>,
+    axum::extract::Query(q): axum::extract::Query<CurrencyQuery>,
 ) -> Result<Json<aum_contract::TaskMetrics>, (axum::http::StatusCode, String)> {
     let data = state.data().ok_or_else(no_storage)?;
-    let metrics = aum_engine::task_metrics(&data.db, task_id, &data.prices)
+    let money = data.money.read().await;
+    let metrics = aum_engine::task_metrics(&data.db, task_id, money.cost_context(q.or_usd()))
         .await
         .map_err(|e| server_error(e, "could not compute task metrics"))?;
     Ok(Json(metrics))
@@ -448,6 +450,9 @@ pub struct ExportQuery {
     /// `json` or `csv`.
     #[serde(default)]
     pub format: Option<String>,
+    /// Presentation currency, so an exported cost matches what was on screen.
+    #[serde(default)]
+    pub currency: Option<CurrencyCode>,
 }
 
 /// Export a task's requests.
@@ -511,9 +516,14 @@ pub async fn export_task(
             .into_response());
     }
 
-    let metrics = aum_engine::task_metrics(&data.db, task_id, &data.prices)
-        .await
-        .map_err(|e| server_error(e, "could not compute task metrics"))?;
+    let money = data.money.read().await;
+    let metrics = aum_engine::task_metrics(
+        &data.db,
+        task_id,
+        money.cost_context(query.currency.map_or(aum_contract::Currency::Usd, |c| c.0)),
+    )
+    .await
+    .map_err(|e| server_error(e, "could not compute task metrics"))?;
 
     Ok(Json(serde_json::json!({
         "exported_at": chrono::Utc::now(),
@@ -523,4 +533,247 @@ pub async fn export_task(
         "note": "Metadata only. Prompt and response text are not recorded by this application.",
     }))
     .into_response())
+}
+
+// ── Pricing ─────────────────────────────────────────────────────────────────
+
+/// Which currency to present amounts in, from `?currency=EUR`.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize)]
+pub struct CurrencyQuery {
+    #[serde(default)]
+    pub currency: Option<CurrencyCode>,
+}
+
+/// A currency code that only deserializes if this backend can actually present
+/// it — an unsupported one is a 400, not a silent fallback to dollars under a
+/// euro label.
+#[derive(Debug, Clone, Copy)]
+pub struct CurrencyCode(pub aum_contract::Currency);
+
+impl<'de> serde::Deserialize<'de> for CurrencyCode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        aum_engine::prices::parse_currency(&raw)
+            .map(Self)
+            .ok_or_else(|| {
+                serde::de::Error::custom(format!(
+                    "{raw} is not a currency this backend can present"
+                ))
+            })
+    }
+}
+
+impl CurrencyQuery {
+    fn or_usd(self) -> aum_contract::Currency {
+        self.currency.map_or(aum_contract::Currency::Usd, |c| c.0)
+    }
+}
+
+/// Everything the pricing screen needs: what ran, what it costs, and what a
+/// converted amount would be converted with.
+pub async fn pricing(
+    State(state): State<AppState>,
+) -> Result<Json<aum_contract::PricingView>, (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+
+    let observed = aum_db::repo::observed_models(data.db.reader())
+        .await
+        .map_err(|e| server_error(e, "could not read the models in use"))?;
+
+    let money = data.money.read().await;
+    let now = chrono::Utc::now();
+
+    let models = observed
+        .into_iter()
+        .map(|m| aum_contract::ObservedModel {
+            priced: money.table.has_price(&m.model_id),
+            model_id: m.model_id,
+            adapter_id: m.adapter_id,
+            requests: u32::try_from(m.requests).unwrap_or(u32::MAX),
+            total_tokens: u64::try_from(m.total_tokens).unwrap_or(0),
+        })
+        .collect();
+
+    let prices = money
+        .table
+        .models()
+        .into_iter()
+        .map(|p| {
+            let money_of = |d: rust_decimal::Decimal| aum_contract::Money::new(d);
+            aum_contract::PriceRow {
+                // The version that would be used right now, which is not
+                // necessarily the newest row: a user entry outranks a seeded one.
+                is_current: money
+                    .table
+                    .lookup(&p.model_id)
+                    .is_some_and(|cur| cur.version_id == p.version_id),
+                version_id: p.version_id.clone(),
+                model_id: p.model_id.clone(),
+                input_per_mtok: money_of(p.rates.input_per_mtok),
+                output_per_mtok: money_of(p.rates.output_per_mtok),
+                cache_read_per_mtok: money_of(p.rates.cache_read_per_mtok),
+                cache_write_5m_per_mtok: money_of(p.rates.cache_write_5m_per_mtok),
+                cache_write_1h_per_mtok: money_of(p.rates.cache_write_1h_per_mtok),
+                effective_from: p.effective_from.clone(),
+                source: p.source.clone(),
+            }
+        })
+        .collect();
+
+    let fx = money
+        .fx
+        .iter()
+        .map(|r| aum_contract::FxRow {
+            quote_currency: r.quote.code().to_owned(),
+            rate: aum_contract::Money::new(r.rate),
+            as_of: r.as_of.to_rfc3339(),
+            source: r.source.clone(),
+            age_days: r.age_days(now),
+            is_stale: r.is_stale(now),
+            description: aum_pricing::fx::describe(Some(r), now),
+        })
+        .collect();
+
+    Ok(Json(aum_contract::PricingView {
+        models,
+        prices,
+        fx,
+        supported_currencies: vec!["USD".to_owned(), "EUR".to_owned(), "CZK".to_owned()],
+    }))
+}
+
+/// Record a price the user has entered.
+///
+/// The rates go in as a new version, and the in-memory table is rebuilt from
+/// storage rather than patched, so what the next request costs with is exactly
+/// what was persisted.
+pub async fn set_price(
+    State(state): State<AppState>,
+    Json(body): Json<aum_contract::NewPrice>,
+) -> Result<Json<aum_contract::PriceRow>, (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+
+    if body.model_id.trim().is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "a price needs the model id it applies to".to_owned(),
+        ));
+    }
+
+    let input = body.input_per_mtok.amount();
+    // Absent means "charged at the input rate", which is both providers'
+    // documented default. Zero would be a claim that caching is free, and would
+    // understate a long cached session by most of its total.
+    let rates = aum_pricing::Rates {
+        input_per_mtok: input,
+        output_per_mtok: body.output_per_mtok.amount(),
+        cache_read_per_mtok: body.cache_read_per_mtok.map_or(input, |m| m.amount()),
+        cache_write_5m_per_mtok: body.cache_write_5m_per_mtok.map_or(input, |m| m.amount()),
+        cache_write_1h_per_mtok: body.cache_write_1h_per_mtok.map_or(input, |m| m.amount()),
+    };
+
+    if rates.input_per_mtok.is_sign_negative() || rates.output_per_mtok.is_sign_negative() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "a rate cannot be negative".to_owned(),
+        ));
+    }
+
+    let saved = aum_engine::prices::save_price(&data.db, &body.model_id, &rates, body.note)
+        .await
+        .map_err(|e| match e {
+            aum_engine::prices::PriceError::Unstorable { .. } => {
+                (axum::http::StatusCode::BAD_REQUEST, e.to_string())
+            }
+            aum_engine::prices::PriceError::Db(inner) => {
+                server_error(inner, "could not record the price")
+            }
+        })?;
+
+    reload_money(&state).await?;
+
+    Ok(Json(aum_contract::PriceRow {
+        version_id: saved.version_id,
+        model_id: saved.model_id,
+        input_per_mtok: aum_contract::Money::new(saved.rates.input_per_mtok),
+        output_per_mtok: aum_contract::Money::new(saved.rates.output_per_mtok),
+        cache_read_per_mtok: aum_contract::Money::new(saved.rates.cache_read_per_mtok),
+        cache_write_5m_per_mtok: aum_contract::Money::new(saved.rates.cache_write_5m_per_mtok),
+        cache_write_1h_per_mtok: aum_contract::Money::new(saved.rates.cache_write_1h_per_mtok),
+        effective_from: saved.effective_from,
+        source: saved.source,
+        is_current: true,
+    }))
+}
+
+/// Record an exchange rate the user has entered.
+///
+/// Typed in, never fetched: this process makes no outbound request to find one,
+/// which is what keeps the privacy claim in Settings true.
+pub async fn set_fx_rate(
+    State(state): State<AppState>,
+    Json(body): Json<aum_contract::NewFxRate>,
+) -> Result<Json<aum_contract::FxRow>, (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+
+    let currency = aum_engine::prices::parse_currency(&body.quote_currency).ok_or((
+        axum::http::StatusCode::BAD_REQUEST,
+        format!(
+            "{} is not a currency this backend can present",
+            body.quote_currency
+        ),
+    ))?;
+
+    if currency == aum_contract::Currency::Usd {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "USD is the base currency and needs no rate".to_owned(),
+        ));
+    }
+
+    if body.rate.amount() <= rust_decimal::Decimal::ZERO {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "an exchange rate must be greater than zero".to_owned(),
+        ));
+    }
+
+    let saved = aum_engine::prices::save_fx(&data.db, currency, body.rate.amount())
+        .await
+        .map_err(|e| match e {
+            aum_engine::prices::PriceError::Unstorable { .. } => {
+                (axum::http::StatusCode::BAD_REQUEST, e.to_string())
+            }
+            aum_engine::prices::PriceError::Db(inner) => {
+                server_error(inner, "could not record the exchange rate")
+            }
+        })?;
+
+    reload_money(&state).await?;
+
+    let now = chrono::Utc::now();
+    Ok(Json(aum_contract::FxRow {
+        quote_currency: saved.quote.code().to_owned(),
+        rate: aum_contract::Money::new(saved.rate),
+        as_of: saved.as_of.to_rfc3339(),
+        source: saved.source.clone(),
+        age_days: saved.age_days(now),
+        is_stale: saved.is_stale(now),
+        description: aum_pricing::fx::describe(Some(&saved), now),
+    }))
+}
+
+/// Rebuild the in-memory rates from storage.
+async fn reload_money(state: &AppState) -> Result<(), (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+    let table = aum_engine::prices::load_table(&data.db)
+        .await
+        .map_err(|e| server_error(e, "could not reload prices"))?;
+    let fx = aum_engine::prices::load_fx(&data.db)
+        .await
+        .map_err(|e| server_error(e, "could not reload exchange rates"))?;
+
+    let mut money = data.money.write().await;
+    *money = crate::state::MoneyState { table, fx };
+    Ok(())
 }

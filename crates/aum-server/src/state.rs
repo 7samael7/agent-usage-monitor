@@ -17,9 +17,35 @@ pub struct DataHandle {
     pub db: aum_db::Database,
     pub ingest: std::sync::Arc<RwLock<aum_engine::IngestState>>,
     pub tasks: std::sync::Arc<aum_engine::TaskManager>,
-    /// Loaded once at startup. Prices are append-only, so a running process
-    /// never needs to invalidate this — a new version is a new entry.
-    pub prices: std::sync::Arc<aum_pricing::PriceTable>,
+    /// Rates, behind a lock because the user can add one while the process is
+    /// running and the next request must cost with it.
+    pub money: std::sync::Arc<RwLock<MoneyState>>,
+}
+
+/// Everything the process knows about what things cost.
+///
+/// Both halves are append-only in storage; this is the in-memory projection,
+/// rebuilt after an edit rather than mutated in place, so a half-applied change
+/// can never be observed.
+pub struct MoneyState {
+    pub table: aum_pricing::PriceTable,
+    /// The newest rate per currency. Entered by the user — this process makes
+    /// no outbound requests to find one.
+    pub fx: Vec<aum_pricing::ExchangeRate>,
+}
+
+impl MoneyState {
+    #[must_use]
+    pub fn cost_context(
+        &self,
+        currency: aum_contract::Currency,
+    ) -> aum_engine::prices::CostContext<'_> {
+        aum_engine::prices::CostContext {
+            table: &self.table,
+            fx: &self.fx,
+            currency,
+        }
+    }
 }
 
 /// How many events the broadcast buffer holds before a slow subscriber is

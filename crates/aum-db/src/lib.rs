@@ -17,6 +17,7 @@
 //! same safety is recovered by running every query against a freshly migrated
 //! temporary database in tests — same guarantee, no build coupling.
 
+pub mod pricing;
 pub mod repo;
 pub mod writer;
 

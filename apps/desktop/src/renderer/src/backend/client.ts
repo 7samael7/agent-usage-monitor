@@ -7,9 +7,14 @@
 
 import type {
   AdapterDescriptor,
+  FxRow,
   HealthResponse,
   IngestStatus,
   MetaResponse,
+  NewFxRate,
+  NewPrice,
+  PriceRow,
+  PricingView,
   SeriesPoint,
   SessionSummary,
   TaskMetrics,
@@ -65,9 +70,14 @@ export function fetchTasks(conn: Connection, signal?: AbortSignal): Promise<Task
 export function fetchTaskMetrics(
   conn: Connection,
   taskId: string,
+  currency?: string,
   signal?: AbortSignal,
 ): Promise<TaskMetrics> {
-  return get(conn, `/v1/tasks/${taskId}/metrics`, signal)
+  // The backend does the conversion, in decimal, and marks what it cost in
+  // certainty. Converting here would mean float arithmetic on money and would
+  // lose the accuracy downgrade along with it.
+  const q = currency && currency !== 'USD' ? `?currency=${currency}` : ''
+  return get(conn, `/v1/tasks/${taskId}/metrics${q}`, signal)
 }
 
 export function fetchAdapters(
@@ -126,8 +136,14 @@ export function fetchTaskSeries(
 }
 
 /** A URL the user can open or save. The export itself is metadata only. */
-export function exportUrl(conn: Connection, taskId: string, format: 'json' | 'csv'): string {
-  return `${conn.baseUrl}/v1/tasks/${taskId}/export?format=${format}`
+export function exportUrl(
+  conn: Connection,
+  taskId: string,
+  format: 'json' | 'csv',
+  currency?: string,
+): string {
+  const cur = currency && currency !== 'USD' ? `&currency=${currency}` : ''
+  return `${conn.baseUrl}/v1/tasks/${taskId}/export?format=${format}${cur}`
 }
 
 /**
@@ -141,10 +157,36 @@ export async function fetchExport(
   conn: Connection,
   taskId: string,
   format: 'json' | 'csv',
+  currency?: string,
 ): Promise<string> {
-  const res = await fetch(exportUrl(conn, taskId, format), {
+  const res = await fetch(exportUrl(conn, taskId, format, currency), {
     headers: { Authorization: `Bearer ${conn.token}` },
   })
   if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => res.statusText))
   return res.text()
+}
+
+async function post<T>(conn: Connection, path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${conn.baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${conn.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => res.statusText))
+  return (await res.json()) as T
+}
+
+export function fetchPricing(conn: Connection, signal?: AbortSignal): Promise<PricingView> {
+  return get(conn, '/v1/pricing', signal)
+}
+
+export function savePrice(conn: Connection, price: NewPrice): Promise<PriceRow> {
+  return post(conn, '/v1/pricing', price)
+}
+
+export function saveFxRate(conn: Connection, rate: NewFxRate): Promise<FxRow> {
+  return post(conn, '/v1/pricing/fx', rate)
 }

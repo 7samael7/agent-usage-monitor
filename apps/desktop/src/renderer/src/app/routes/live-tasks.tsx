@@ -158,7 +158,14 @@ function LiveRow({ taskId, name }: { taskId: string; name: string }) {
       </Td>
       <Td align="right">
         {metrics ? (
-          <Money measured={metrics.cost.api_equivalent} kind="api-equivalent" currency="USD" />
+          <Money
+            measured={metrics.cost.api_equivalent}
+            kind="api-equivalent"
+            // Live snapshots are pushed in USD: a broadcast has no client, so it
+            // cannot know whose currency to convert into. Relabelling the figure
+            // here would put a dollar amount under a euro sign.
+            currency="USD"
+          />
         ) : (
           '—'
         )}

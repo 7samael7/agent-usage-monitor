@@ -144,3 +144,78 @@ export interface SeriesPoint {
   output_total: number
   unclassified: number
 }
+
+// ── Pricing ─────────────────────────────────────────────────────────────────
+
+/** One model this machine has actually used. */
+export interface ObservedModel {
+  model_id: string
+  adapter_id: string
+  requests: number
+  total_tokens: number
+  /** A rate exists for this exact id. Never true because a similar model has one. */
+  priced: boolean
+}
+
+/**
+ * One version of one model's rates, in money per million tokens.
+ *
+ * Rates are `Money`, so they arrive as decimal strings for the same reason
+ * costs do: parsing one into a float reintroduces the error the string encoding
+ * exists to prevent.
+ */
+export interface PriceRow {
+  version_id: string
+  model_id: string
+  input_per_mtok: Money
+  output_per_mtok: Money
+  cache_read_per_mtok: Money
+  cache_write_5m_per_mtok: Money
+  cache_write_1h_per_mtok: Money
+  effective_from: string
+  /** `seed`, `user` or `updater`. */
+  source: string
+  /** The version a request made now would be costed with. */
+  is_current: boolean
+}
+
+/** An exchange rate, and how much to trust it. */
+export interface FxRow {
+  quote_currency: string
+  /** Units of the quote currency per 1 USD. */
+  rate: Money
+  as_of: string
+  source: string
+  age_days: number
+  /** Past a week old; amounts converted with it are downgraded to estimates. */
+  is_stale: boolean
+  description: string
+}
+
+export interface PricingView {
+  models: ObservedModel[]
+  prices: PriceRow[]
+  fx: FxRow[]
+  /** What this backend can present. The picker offers exactly these. */
+  supported_currencies: string[]
+}
+
+/** A rate the user has entered. */
+export interface NewPrice {
+  model_id: string
+  input_per_mtok: Money
+  output_per_mtok: Money
+  /**
+   * Absent means "charged at the input rate", which is both providers'
+   * documented default — not zero, which would claim caching is free.
+   */
+  cache_read_per_mtok?: Money | null
+  cache_write_5m_per_mtok?: Money | null
+  cache_write_1h_per_mtok?: Money | null
+  note?: string | null
+}
+
+export interface NewFxRate {
+  quote_currency: string
+  rate: Money
+}

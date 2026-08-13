@@ -40,9 +40,10 @@ pub const CONTRACT_VERSION: &str = "1.0.0";
 pub const API_PREFIX: &str = "/v1";
 
 pub use dto::{
-    AdapterDescriptor, AdapterState, CapabilityState, CostBreakdown, HealthResponse,
-    IngestProgress, IngestStatus, LatencySummary, MetaResponse, RequestCounts, SeriesPoint,
-    SessionSummary, TaskBinding, TaskMetrics, TaskStatus, TaskSummary,
+    AdapterDescriptor, AdapterState, CapabilityState, CostBreakdown, FxRow, HealthResponse,
+    IngestProgress, IngestStatus, LatencySummary, MetaResponse, NewFxRate, NewPrice, ObservedModel,
+    PriceRow, PricingView, RequestCounts, SeriesPoint, SessionSummary, TaskBinding, TaskMetrics,
+    TaskStatus, TaskSummary,
 };
 pub use events::{AgentEvent, EventEnvelope};
 pub use handshake::Handshake;

@@ -26,6 +26,7 @@ import {
   Th,
   inputClass,
 } from '../../viz/ui'
+import { useCurrency } from '../preferences'
 import { navigate } from '../router'
 
 export function Benchmarks() {
@@ -243,6 +244,7 @@ function EnvEditor({
 /** Everything that has run, side by side. */
 function ComparisonTable({ tasks }: { tasks: TaskSummary[] }) {
   const conn = useConnection()
+  const currency = useCurrency()
   const [metrics, setMetrics] = useState<
     Record<string, Awaited<ReturnType<typeof fetchTaskMetrics>>>
   >({})
@@ -251,12 +253,12 @@ function ComparisonTable({ tasks }: { tasks: TaskSummary[] }) {
     if (!conn || tasks.length === 0) return
     const ac = new AbortController()
     for (const task of tasks.slice(0, 25)) {
-      void fetchTaskMetrics(conn, task.id, ac.signal)
+      void fetchTaskMetrics(conn, task.id, currency, ac.signal)
         .then((m) => setMetrics((prev) => ({ ...prev, [task.id]: m })))
         .catch(() => {})
     }
     return () => ac.abort()
-  }, [conn, tasks])
+  }, [conn, tasks, currency])
 
   if (tasks.length === 0) {
     return <Empty>No tasks yet. Start one above and it will appear here.</Empty>
@@ -305,13 +307,21 @@ function ComparisonTable({ tasks }: { tasks: TaskSummary[] }) {
               </Td>
               <Td align="right">
                 {m ? (
-                  <Money measured={m.cost.api_equivalent} kind="api-equivalent" currency="USD" />
+                  <Money
+                    measured={m.cost.api_equivalent}
+                    kind="api-equivalent"
+                    currency={currency}
+                  />
                 ) : (
                   '—'
                 )}
               </Td>
               <Td align="right">
-                {m ? <Money measured={m.cost.actual_billed} kind="billed" currency="USD" /> : '—'}
+                {m ? (
+                  <Money measured={m.cost.actual_billed} kind="billed" currency={currency} />
+                ) : (
+                  '—'
+                )}
               </Td>
               <Td align="right" numeric>
                 {m ? `${Math.round(m.elapsed_ms / 1000)}s` : '—'}

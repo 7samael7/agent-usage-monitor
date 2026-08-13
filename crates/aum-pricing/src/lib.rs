@@ -19,6 +19,7 @@
 //! machine as free.
 
 pub mod fx;
+pub mod nano;
 pub mod table;
 
 use aum_contract::{Measured, MeasurementSource, Money, UnavailableReason};

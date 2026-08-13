@@ -5,6 +5,7 @@
 
 pub mod ingest;
 pub mod metrics;
+pub mod prices;
 pub mod probe;
 pub mod scan;
 pub mod tasks;
@@ -191,9 +192,9 @@ impl PassStats {
 pub async fn task_metrics(
     db: &Database,
     task_id: uuid::Uuid,
-    table: &aum_pricing::PriceTable,
+    cost: prices::CostContext<'_>,
 ) -> Result<aum_contract::TaskMetrics, aum_db::DbError> {
-    use aum_contract::{Currency, TaskStatus};
+    use aum_contract::TaskStatus;
 
     let id = task_id.to_string();
     let totals = aum_db::repo::task_totals(db.reader(), &id).await?;
@@ -256,8 +257,11 @@ pub async fn task_metrics(
             _ => None,
         },
         adapter_id: &adapter_id,
-        currency: Currency::Usd,
-        api_equivalent: metrics::cost_task(&per_model, table),
+        currency: cost.currency,
+        // Costed in USD — the currency providers publish — and converted once,
+        // at the end. Converting each model's subtotal instead would round
+        // three times and produce a total that does not match its own parts.
+        api_equivalent: cost.present(metrics::cost_task(&per_model, cost.table)),
         subscription_plan: agent.map(|a| a.subscription_plan().to_owned()),
     }))
 }

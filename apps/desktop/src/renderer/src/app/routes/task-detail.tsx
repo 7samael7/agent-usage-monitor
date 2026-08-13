@@ -11,6 +11,7 @@ import { bridge } from '../../platform/bridge'
 import { TokensOverTime } from '../../viz/charts'
 import { Money, TokenCount } from '../../viz/measurement'
 import { Button, Card, Empty, Screen, Stat } from '../../viz/ui'
+import { useCurrency } from '../preferences'
 import { navigate } from '../router'
 
 export function TaskDetail({ taskId }: { taskId: string }) {
@@ -18,13 +19,14 @@ export function TaskDetail({ taskId }: { taskId: string }) {
   const [metrics, setMetrics] = useState<TaskMetrics | null>(null)
   const [series, setSeries] = useState<SeriesPoint[]>([])
   const [error, setError] = useState<string | null>(null)
+  const currency = useCurrency()
 
   useEffect(() => {
     if (!conn) return
     const ac = new AbortController()
 
     const load = () => {
-      fetchTaskMetrics(conn, taskId, ac.signal)
+      fetchTaskMetrics(conn, taskId, currency, ac.signal)
         .then(setMetrics)
         .catch((e: unknown) => {
           if (!ac.signal.aborted) setError(String(e))
@@ -40,13 +42,13 @@ export function TaskDetail({ taskId }: { taskId: string }) {
       ac.abort()
       clearInterval(timer)
     }
-  }, [conn, taskId])
+  }, [conn, taskId, currency])
 
   const save = (format: 'json' | 'csv') => {
     if (!conn) return
     void (async () => {
       const [text, path] = await Promise.all([
-        fetchExport(conn, taskId, format),
+        fetchExport(conn, taskId, format, currency),
         bridge.native.pickSavePath({
           defaultName: `task-${taskId.slice(0, 8)}.${format}`,
           filters: [{ name: format.toUpperCase(), extensions: [format] }],
@@ -105,13 +107,17 @@ export function TaskDetail({ taskId }: { taskId: string }) {
         <Stat
           label="API-equivalent"
           value={
-            <Money measured={metrics.cost.api_equivalent} kind="api-equivalent" currency="USD" />
+            <Money
+              measured={metrics.cost.api_equivalent}
+              kind="api-equivalent"
+              currency={currency}
+            />
           }
           hint="What this would cost on pay-as-you-go. Not a charge."
         />
         <Stat
           label="actually billed"
-          value={<Money measured={metrics.cost.actual_billed} kind="billed" currency="USD" />}
+          value={<Money measured={metrics.cost.actual_billed} kind="billed" currency={currency} />}
           hint="What you were really charged."
         />
         <Stat

@@ -18,7 +18,7 @@ use axum::{Router, middleware};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 
-pub use state::{AppState, DataHandle};
+pub use state::{AppState, DataHandle, MoneyState};
 
 /// Bind an ephemeral loopback port.
 ///
@@ -40,6 +40,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/ingest/status", get(routes::ingest_status))
         .route("/v1/sessions", get(routes::sessions))
         .route("/v1/adapters", get(routes::adapters))
+        .route("/v1/pricing", get(routes::pricing).post(routes::set_price))
+        .route("/v1/pricing/fx", axum::routing::post(routes::set_fx_rate))
         .route(
             "/v1/tasks",
             get(routes::list_tasks).post(routes::create_task),

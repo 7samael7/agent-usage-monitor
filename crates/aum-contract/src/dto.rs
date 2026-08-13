@@ -315,3 +315,89 @@ pub struct SeriesPoint {
     pub output_total: u64,
     pub unclassified: u64,
 }
+
+// ── Pricing ─────────────────────────────────────────────────────────────────
+
+/// One model this machine has actually used.
+///
+/// Not a catalogue of everything a provider publishes: the list that matters is
+/// what ran here, because that is what needs a price.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ObservedModel {
+    pub model_id: String,
+    pub adapter_id: String,
+    pub requests: u32,
+    pub total_tokens: u64,
+    /// Whether a rate exists for this exact id. Never true because a similar
+    /// model has one.
+    pub priced: bool,
+}
+
+/// One version of one model's rates, in money per million tokens.
+///
+/// Rates are amounts of money and so cross the wire as decimal strings, for the
+/// same reason costs do.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct PriceRow {
+    pub version_id: String,
+    pub model_id: String,
+    pub input_per_mtok: Money,
+    pub output_per_mtok: Money,
+    pub cache_read_per_mtok: Money,
+    pub cache_write_5m_per_mtok: Money,
+    pub cache_write_1h_per_mtok: Money,
+    pub effective_from: String,
+    /// `seed`, `user` or `updater`.
+    pub source: String,
+    /// True for the version a request made now would be costed with.
+    pub is_current: bool,
+}
+
+/// An exchange rate, and how much to trust it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct FxRow {
+    pub quote_currency: String,
+    /// Units of the quote currency per 1 USD.
+    pub rate: Money,
+    pub as_of: String,
+    pub source: String,
+    pub age_days: i64,
+    /// Past a week old. Amounts converted with a stale rate are downgraded to
+    /// estimates rather than shown as current.
+    pub is_stale: bool,
+    /// A full sentence for the interface, so the reason travels with the fact.
+    pub description: String,
+}
+
+/// The pricing screen's whole state in one response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct PricingView {
+    pub models: Vec<ObservedModel>,
+    pub prices: Vec<PriceRow>,
+    pub fx: Vec<FxRow>,
+    /// Currencies this backend can present. The interface offers exactly these
+    /// rather than a hardcoded list that might not match.
+    pub supported_currencies: Vec<String>,
+}
+
+/// A rate the user has entered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct NewPrice {
+    pub model_id: String,
+    pub input_per_mtok: Money,
+    pub output_per_mtok: Money,
+    /// Optional because a provider may not charge separately for these. Absent
+    /// means "same as input", which is both providers' documented default —
+    /// not zero, which would understate a cached session by most of its total.
+    pub cache_read_per_mtok: Option<Money>,
+    pub cache_write_5m_per_mtok: Option<Money>,
+    pub cache_write_1h_per_mtok: Option<Money>,
+    pub note: Option<String>,
+}
+
+/// An exchange rate the user has entered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct NewFxRate {
+    pub quote_currency: String,
+    pub rate: Money,
+}

@@ -85,13 +85,25 @@ async fn run() -> anyhow::Result<()> {
             ingest_shutdown = Some(shutdown_tx);
 
             let tasks = std::sync::Arc::new(aum_engine::TaskManager::new(db.clone()));
-            let prices = std::sync::Arc::new(aum_pricing::PriceTable::seed());
+
+            // Seeded rates plus whatever the user has entered. Loading failures
+            // are not fatal: an app that shows tokens without costs is far more
+            // useful than one that refuses to start over a price list.
+            let table = aum_engine::prices::load_table(&db).await.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "could not load stored prices; using the seed table");
+                aum_pricing::PriceTable::seed()
+            });
+            let fx = aum_engine::prices::load_fx(&db).await.unwrap_or_default();
+            let money = std::sync::Arc::new(tokio::sync::RwLock::new(aum_server::MoneyState {
+                table,
+                fx,
+            }));
 
             Some(aum_server::DataHandle {
                 db,
                 ingest,
                 tasks,
-                prices,
+                money,
             })
         }
         Err(e) => {
@@ -203,7 +215,11 @@ async fn publish_metrics(state: AppState) {
             let Ok(id) = uuid::Uuid::parse_str(&task.id) else {
                 continue;
             };
-            match aum_engine::task_metrics(&data.db, id, &data.prices).await {
+            // Pushed snapshots are always in USD. Presentation currency is the
+            // client's choice per request, and a broadcast has no client.
+            let money = data.money.read().await;
+            let ctx = money.cost_context(aum_contract::Currency::Usd);
+            match aum_engine::task_metrics(&data.db, id, ctx).await {
                 Ok(metrics) => {
                     state.publish(
                         Some(id),
