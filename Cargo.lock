@@ -180,7 +180,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aum-contract",
+ "aum-db",
  "aum-domain",
+ "aum-engine",
  "axum",
  "chrono",
  "futures",
@@ -201,6 +203,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aum-contract",
+ "aum-db",
+ "aum-engine",
  "aum-server",
  "dirs",
  "rand 0.10.2",

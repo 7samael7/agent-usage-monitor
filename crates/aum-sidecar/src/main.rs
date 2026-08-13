@@ -63,11 +63,42 @@ async fn run() -> anyhow::Result<()> {
     let listener = aum_server::bind().await?;
     let port = listener.local_addr()?.port();
 
-    let state = AppState::new(
+    // Storage is optional at this level on purpose. If the database cannot be
+    // opened, the process still serves /v1/health and reports the failure, so
+    // the desktop app can show a diagnosable error instead of a blank screen.
+    // Kept alive for the whole function: dropping the sender would signal
+    // shutdown, and `serve` below runs until the process is asked to stop.
+    let mut ingest_shutdown = None;
+
+    let data = match aum_db::open(&config.data_dir).await {
+        Ok(db) => {
+            let home = dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("could not determine the home directory"))?;
+            let engine = aum_engine::Engine::new(db.clone(), &home);
+            let ingest = engine.state_handle();
+
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            tokio::spawn(engine.run(shutdown_rx));
+            ingest_shutdown = Some(shutdown_tx);
+
+            Some(aum_server::DataHandle { db, ingest })
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                data_dir = %config.data_dir.display(),
+                "could not open the capture database; usage will not be recorded"
+            );
+            None
+        }
+    };
+
+    let state = AppState::with_data(
         config.token,
         config.allowed_origin,
         port,
         IMPL_VERSION.to_owned(),
+        data,
     );
 
     // The handshake goes out only once the listener is actually bound, so the
@@ -85,6 +116,13 @@ async fn run() -> anyhow::Result<()> {
     tokio::spawn(watchdog(config.parent_pid));
 
     aum_server::serve(listener, state).await?;
+
+    // Stop ingest before leaving, so a pass in flight finishes its transaction
+    // rather than being cut off mid-write.
+    if let Some(tx) = ingest_shutdown.take() {
+        let _ = tx.send(true);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     // Everything that must be durable has been written by this point; from here
     // on there is nothing left to do but leave.

@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 aum-contract.workspace = true
 aum-server.workspace = true
+aum-db.workspace = true
+aum-engine.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

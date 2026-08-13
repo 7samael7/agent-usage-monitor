@@ -18,7 +18,7 @@ use axum::{Router, middleware};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 
-pub use state::AppState;
+pub use state::{AppState, DataHandle};
 
 /// Bind an ephemeral loopback port.
 ///
@@ -37,6 +37,8 @@ pub fn router(state: AppState) -> Router {
     let guarded = Router::new()
         .route("/v1/meta", get(routes::meta))
         .route("/v1/events", get(routes::events))
+        .route("/v1/ingest/status", get(routes::ingest_status))
+        .route("/v1/sessions", get(routes::sessions))
         .layer(middleware::from_fn_with_state(state.clone(), auth::guard));
 
     Router::new()

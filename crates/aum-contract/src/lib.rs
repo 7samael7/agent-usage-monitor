@@ -41,8 +41,8 @@ pub const API_PREFIX: &str = "/v1";
 
 pub use dto::{
     AdapterDescriptor, AdapterState, CapabilityState, CostBreakdown, HealthResponse,
-    IngestProgress, LatencySummary, MetaResponse, RequestCounts, TaskBinding, TaskMetrics,
-    TaskStatus, TaskSummary,
+    IngestProgress, IngestStatus, LatencySummary, MetaResponse, RequestCounts, SessionSummary,
+    TaskBinding, TaskMetrics, TaskStatus, TaskSummary,
 };
 pub use events::{AgentEvent, EventEnvelope};
 pub use handshake::Handshake;

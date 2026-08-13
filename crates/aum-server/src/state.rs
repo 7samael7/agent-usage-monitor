@@ -5,7 +5,18 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
 use aum_contract::{AgentEvent, EventEnvelope};
-use tokio::sync::broadcast;
+use tokio::sync::{RwLock, broadcast};
+
+/// What the server needs in order to answer questions about recorded usage.
+///
+/// Optional so the transport layer can be tested without storage, and so the
+/// process still serves `/v1/health` if the database could not be opened —
+/// failing to open it should produce a diagnosable app, not a silent one.
+#[derive(Clone)]
+pub struct DataHandle {
+    pub db: aum_db::Database,
+    pub ingest: std::sync::Arc<RwLock<aum_engine::IngestState>>,
+}
 
 /// How many events the broadcast buffer holds before a slow subscriber is
 /// dropped.
@@ -31,11 +42,23 @@ struct Inner {
     bus: broadcast::Sender<EventEnvelope>,
     seq: AtomicI64,
     impl_version: String,
+    data: Option<DataHandle>,
 }
 
 impl AppState {
     #[must_use]
     pub fn new(token: String, allowed_origin: String, port: u16, impl_version: String) -> Self {
+        Self::with_data(token, allowed_origin, port, impl_version, None)
+    }
+
+    #[must_use]
+    pub fn with_data(
+        token: String,
+        allowed_origin: String,
+        port: u16,
+        impl_version: String,
+        data: Option<DataHandle>,
+    ) -> Self {
         let (bus, _) = broadcast::channel(BUS_CAPACITY);
         Self(Arc::new(Inner {
             started_at: Instant::now(),
@@ -46,7 +69,15 @@ impl AppState {
             bus,
             seq: AtomicI64::new(0),
             impl_version,
+            data,
         }))
+    }
+
+    /// `None` when storage is unavailable, so handlers can say so explicitly
+    /// rather than returning an empty list that looks like "no usage yet".
+    #[must_use]
+    pub fn data(&self) -> Option<&DataHandle> {
+        self.0.data.as_ref()
     }
 
     #[cfg(test)]

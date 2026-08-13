@@ -5,7 +5,7 @@
  * connection the host handed us; nothing here knows how it was obtained.
  */
 
-import type { HealthResponse, MetaResponse } from '@aum/api-contract'
+import type { HealthResponse, IngestStatus, MetaResponse, SessionSummary } from '@aum/api-contract'
 
 export interface Connection {
   readonly baseUrl: string
@@ -39,4 +39,12 @@ export function fetchHealth(conn: Connection, signal?: AbortSignal): Promise<Hea
 
 export function fetchMeta(conn: Connection, signal?: AbortSignal): Promise<MetaResponse> {
   return get(conn, '/v1/meta', signal)
+}
+
+export function fetchIngestStatus(conn: Connection, signal?: AbortSignal): Promise<IngestStatus> {
+  return get(conn, '/v1/ingest/status', signal)
+}
+
+export function fetchSessions(conn: Connection, signal?: AbortSignal): Promise<SessionSummary[]> {
+  return get(conn, '/v1/sessions', signal)
 }

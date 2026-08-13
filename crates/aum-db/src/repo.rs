@@ -921,3 +921,180 @@ mod cursor_tests {
         );
     }
 }
+
+// ── Observed sessions ───────────────────────────────────────────────────────
+
+/// Aggregate for one observed session.
+#[derive(Debug, Clone, Default)]
+pub struct SessionTotals {
+    pub session_id: String,
+    pub adapter_id: String,
+    pub model_id: Option<String>,
+    pub requests: i64,
+    pub input_fresh: i64,
+    pub cache_read: i64,
+    pub cache_write_5m: i64,
+    pub cache_write_1h: i64,
+    pub cache_write_unspecified: i64,
+    pub output_total: i64,
+    pub unclassified: i64,
+    pub reasoning: Option<i64>,
+    pub reasoning_reported_by: i64,
+    pub first_at: Option<String>,
+    pub last_at: Option<String>,
+    /// No task has claimed this session.
+    pub unattributed: bool,
+}
+
+/// The most recently active sessions.
+///
+/// Ordered by last activity so the dashboard shows what is happening now rather
+/// than what happened first.
+pub async fn recent_sessions(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<SessionTotals>> {
+    let rows = sqlx::query(
+        "SELECT session_id,
+                adapter_id,
+                MAX(model_id)                     AS model_id,
+                COUNT(*)                          AS requests,
+                COALESCE(SUM(input_fresh), 0)     AS input_fresh,
+                COALESCE(SUM(cache_read), 0)      AS cache_read,
+                COALESCE(SUM(cache_write_5m), 0)  AS cache_write_5m,
+                COALESCE(SUM(cache_write_1h), 0)  AS cache_write_1h,
+                COALESCE(SUM(cache_write_unspecified), 0) AS cache_write_unspecified,
+                COALESCE(SUM(output_total), 0)    AS output_total,
+                COALESCE(SUM(unclassified), 0)    AS unclassified,
+                SUM(reasoning)                    AS reasoning,
+                COUNT(reasoning)                  AS reasoning_reported_by,
+                MIN(occurred_at)                  AS first_at,
+                MAX(occurred_at)                  AS last_at,
+                -- A session is unattributed only if no row in it is claimed.
+                MIN(CASE WHEN task_id IS NULL THEN 1 ELSE 0 END) AS unattributed
+           FROM ai_request
+          GROUP BY session_id, adapter_id
+          ORDER BY last_at DESC
+          LIMIT ?1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(SessionTotals {
+                session_id: row.try_get("session_id")?,
+                adapter_id: row.try_get("adapter_id")?,
+                model_id: row.try_get("model_id")?,
+                requests: row.try_get("requests")?,
+                input_fresh: row.try_get("input_fresh")?,
+                cache_read: row.try_get("cache_read")?,
+                cache_write_5m: row.try_get("cache_write_5m")?,
+                cache_write_1h: row.try_get("cache_write_1h")?,
+                cache_write_unspecified: row.try_get("cache_write_unspecified")?,
+                output_total: row.try_get("output_total")?,
+                unclassified: row.try_get("unclassified")?,
+                reasoning: row.try_get("reasoning")?,
+                reasoning_reported_by: row.try_get("reasoning_reported_by")?,
+                first_at: row.try_get("first_at")?,
+                last_at: row.try_get("last_at")?,
+                unattributed: row.try_get::<i64, _>("unattributed")? == 1,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod session_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    async fn insert(db: &crate::Database, session: &str, adapter: &str, out: i64, at: &str) {
+        sqlx::query(
+            "INSERT INTO ai_request
+               (id, adapter_id, session_id, dedup_key, occurred_at,
+                measurement_source, request_kind, created_at, output_total)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'provider_exact', 'turn', ?5, ?6)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(adapter)
+        .bind(session)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(at)
+        .bind(out)
+        .execute(db.writer())
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sessions_are_grouped_and_ordered_by_recency() {
+        let db = crate::open_in_memory().await.unwrap();
+        insert(&db, "old", "claude_code", 100, "2026-08-01T10:00:00.000Z").await;
+        insert(&db, "new", "codex", 200, "2026-08-12T10:00:00.000Z").await;
+        insert(&db, "new", "codex", 300, "2026-08-12T11:00:00.000Z").await;
+
+        let sessions = recent_sessions(db.reader(), 10).await.unwrap();
+        assert_eq!(sessions.len(), 2);
+
+        let first = sessions.first().unwrap();
+        assert_eq!(first.session_id, "new", "most recent first");
+        assert_eq!(first.requests, 2);
+        assert_eq!(first.output_total, 500);
+    }
+
+    #[tokio::test]
+    async fn a_session_with_no_task_is_marked_unattributed() {
+        let db = crate::open_in_memory().await.unwrap();
+        insert(&db, "s1", "claude_code", 100, "2026-08-12T10:00:00.000Z").await;
+
+        let sessions = recent_sessions(db.reader(), 10).await.unwrap();
+        assert!(sessions.first().unwrap().unattributed);
+    }
+
+    #[tokio::test]
+    async fn a_session_claimed_by_a_task_is_not_unattributed() {
+        let db = crate::open_in_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO task (id,name,adapter_id,status,created_at)
+             VALUES ('t1','x','claude_code','running', ?)",
+        )
+        .bind(now_sql())
+        .execute(db.writer())
+        .await
+        .unwrap();
+        bind_session(
+            db.writer(),
+            "s1",
+            "t1",
+            "claude_code",
+            "launched_pinned",
+            "{}",
+        )
+        .await
+        .unwrap();
+
+        // Through the real path: attribution is resolved at insert time, from
+        // the binding, by a single equality lookup.
+        upsert_usage(
+            db.writer(),
+            &UsageRecord {
+                adapter_id: "claude_code".into(),
+                session_id: "s1".into(),
+                dedup_key: "k1".into(),
+                model_id: Some("claude-opus-5".into()),
+                occurred_at: chrono::Utc::now(),
+                measurement_source: "provider_exact".into(),
+                request_kind: "turn".into(),
+                usage: aum_domain::TokenUsage::default(),
+                is_sidechain: false,
+                agent_id: None,
+                agent_type: None,
+                raw_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let sessions = recent_sessions(db.reader(), 10).await.unwrap();
+        assert!(!sessions.first().unwrap().unattributed);
+    }
+}

@@ -266,3 +266,34 @@ mod tests {
         assert!(s.contains("proxy"), "reason should name the remedy: {s}");
     }
 }
+
+// ── Observed usage ──────────────────────────────────────────────────────────
+
+/// One agent session the monitor has read, whether or not a task claims it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SessionSummary {
+    pub session_id: String,
+    pub adapter_id: String,
+    pub model_id: Option<String>,
+    pub requests: u32,
+    pub bands: TokenBands,
+    pub total_tokens: Measured<u64>,
+    pub reasoning_tokens: Measured<u64>,
+    pub first_at: Option<String>,
+    pub last_at: Option<String>,
+    /// True when no task has claimed this session. Surfaced rather than hidden:
+    /// what the application declined to guess about is information.
+    pub unattributed: bool,
+}
+
+/// What ingest has read so far.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct IngestStatus {
+    pub passes: u64,
+    pub files_scanned: u32,
+    pub requests_recorded: u64,
+    pub anomalies: u32,
+    /// True until the first pass over existing history completes, so the UI can
+    /// distinguish "nothing here" from "still reading".
+    pub backfilling: bool,
+}

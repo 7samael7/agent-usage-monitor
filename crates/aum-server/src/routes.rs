@@ -79,3 +79,102 @@ pub async fn events(
     // from a half-open socket — something a health endpoint cannot distinguish.
     Sse::new(stream).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
 }
+
+/// What ingest has read so far.
+///
+/// `backfilling` is what lets the UI distinguish "you have no usage" from
+/// "still reading your history", which on a machine with months of transcripts
+/// are very different statements.
+pub async fn ingest_status(State(state): State<AppState>) -> Json<aum_contract::IngestStatus> {
+    let Some(data) = state.data() else {
+        return Json(aum_contract::IngestStatus::default());
+    };
+    let s = *data.ingest.read().await;
+    Json(aum_contract::IngestStatus {
+        passes: s.passes,
+        files_scanned: s.cumulative.files_scanned,
+        requests_recorded: s.cumulative.usage_recorded,
+        anomalies: u32::try_from(s.cumulative.anomalies).unwrap_or(u32::MAX),
+        backfilling: s.backfilling,
+    })
+}
+
+/// Recently active sessions, whether or not a task claims them.
+///
+/// Unclaimed sessions are included and flagged rather than hidden: what the
+/// application declined to guess about is information the user should see.
+pub async fn sessions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<aum_contract::SessionSummary>>, (axum::http::StatusCode, String)> {
+    let Some(data) = state.data() else {
+        return Err((
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "storage is unavailable, so no usage can be reported".to_owned(),
+        ));
+    };
+
+    let rows = aum_db::repo::recent_sessions(data.db.reader(), 50)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "could not read sessions");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "could not read recorded usage".to_owned(),
+            )
+        })?;
+
+    Ok(Json(rows.into_iter().map(to_summary).collect()))
+}
+
+fn to_summary(t: aum_db::repo::SessionTotals) -> aum_contract::SessionSummary {
+    use aum_contract::{Measured, MeasurementSource, TokenBands, UnavailableReason};
+
+    let n = |v: i64| u64::try_from(v).unwrap_or(0);
+    let bands = TokenBands {
+        input_fresh: n(t.input_fresh),
+        cache_read: n(t.cache_read),
+        cache_write_5m: n(t.cache_write_5m),
+        cache_write_1h: n(t.cache_write_1h),
+        cache_write_unspecified: n(t.cache_write_unspecified),
+        output_total: n(t.output_total),
+        reasoning: t.reasoning.map(n),
+        unclassified: n(t.unclassified),
+    };
+
+    let requests = u32::try_from(t.requests).unwrap_or(u32::MAX);
+    let reported_by = u32::try_from(t.reasoning_reported_by).unwrap_or(u32::MAX);
+
+    // These sessions were read from files the agents wrote, so the counts are
+    // the provider's own. Completeness of the *window* is a separate question
+    // and belongs to a task, not to a session read from history.
+    let total_tokens = Measured::exact(bands.grand_total(), MeasurementSource::ProviderReported);
+
+    let reasoning_tokens = match t.reasoning {
+        None => Measured::unavailable(UnavailableReason::NotReportedByProvider {
+            field: "reasoning_tokens".to_owned(),
+            detail: "This agent does not report a reasoning-token count.".to_owned(),
+        }),
+        Some(v) if reported_by >= requests => {
+            Measured::exact(n(v), MeasurementSource::ProviderReported)
+        }
+        Some(v) => Measured::partial(
+            n(v),
+            reported_by,
+            requests,
+            format!("{reported_by} of {requests} requests report reasoning tokens"),
+        ),
+    };
+
+    aum_contract::SessionSummary {
+        session_id: t.session_id,
+        adapter_id: t.adapter_id,
+        model_id: t.model_id,
+        requests,
+        bands,
+        total_tokens,
+        reasoning_tokens,
+        first_at: t.first_at,
+        last_at: t.last_at,
+        unattributed: t.unattributed,
+    }
+}

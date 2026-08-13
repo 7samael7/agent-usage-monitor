@@ -107,3 +107,27 @@ export interface IngestProgress {
   lag_ms: number
   anomalies: number
 }
+
+/** One agent session the monitor has read, whether or not a task claims it. */
+export interface SessionSummary {
+  session_id: string
+  adapter_id: string
+  model_id: string | null
+  requests: number
+  bands: TokenBands
+  total_tokens: Measured<number>
+  reasoning_tokens: Measured<number>
+  first_at: string | null
+  last_at: string | null
+  /** No task has claimed this session. Shown, never hidden. */
+  unattributed: boolean
+}
+
+export interface IngestStatus {
+  passes: number
+  files_scanned: number
+  requests_recorded: number
+  anomalies: number
+  /** True until the first pass over existing history completes. */
+  backfilling: boolean
+}
