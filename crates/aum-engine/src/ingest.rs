@@ -241,7 +241,26 @@ pub async fn ingest_file(
                 }
             }
 
-            Signal::RequestFailed { .. } => stats.failures += 1,
+            Signal::RequestFailed {
+                session_id,
+                dedup_key,
+                occurred_at,
+                detail,
+            } => {
+                // Persisted, not merely counted. A request that happened and
+                // could not be measured is what stops a task's total calling
+                // itself exact, and that only works if it is recorded.
+                stats.failures += 1;
+                repo::record_failure(
+                    db.writer(),
+                    adapter.id(),
+                    &session_id,
+                    &dedup_key,
+                    occurred_at,
+                    &detail,
+                )
+                .await?;
+            }
             Signal::RetryAttempt { .. } => stats.retry_attempts += 1,
 
             Signal::Anomaly { kind, detail } => {

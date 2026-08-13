@@ -28,6 +28,9 @@ const WATCHDOG_INTERVAL: Duration = Duration::from_secs(2);
 /// How often a heartbeat goes out, so a client can tell a quiet stream from a
 /// half-open socket.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+/// How often running tasks' numbers are pushed. Fast enough to feel live,
+/// slow enough that the monitor stays invisible in the measurement.
+const METRICS_INTERVAL: Duration = Duration::from_secs(1);
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -81,7 +84,15 @@ async fn run() -> anyhow::Result<()> {
             tokio::spawn(engine.run(shutdown_rx));
             ingest_shutdown = Some(shutdown_tx);
 
-            Some(aum_server::DataHandle { db, ingest })
+            let tasks = std::sync::Arc::new(aum_engine::TaskManager::new(db.clone()));
+            let prices = std::sync::Arc::new(aum_pricing::PriceTable::seed());
+
+            Some(aum_server::DataHandle {
+                db,
+                ingest,
+                tasks,
+                prices,
+            })
         }
         Err(e) => {
             tracing::error!(
@@ -113,12 +124,20 @@ async fn run() -> anyhow::Result<()> {
     );
 
     tokio::spawn(heartbeat(state.clone()));
+    tokio::spawn(publish_metrics(state.clone()));
     tokio::spawn(watchdog(config.parent_pid));
 
+    let state_for_shutdown = state.clone();
     aum_server::serve(listener, state).await?;
 
     // Stop ingest before leaving, so a pass in flight finishes its transaction
     // rather than being cut off mid-write.
+    // Stop anything we launched before leaving, so no agent outlives the
+    // monitor and carries on spending.
+    if let Some(data) = state_for_shutdown.data() {
+        data.tasks.stop_all().await;
+    }
+
     if let Some(tx) = ingest_shutdown.take() {
         let _ = tx.send(true);
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -152,6 +171,51 @@ fn emit_handshake(port: u16) -> anyhow::Result<()> {
     // the buffer drains, it sees a handshake timeout instead of a clean start.
     stdout.flush()?;
     Ok(())
+}
+
+/// Push each running task's numbers once a second.
+///
+/// The snapshot carries **absolute totals**, never deltas, so a client that
+/// misses frames is wrong for at most a second rather than permanently. It is
+/// built by the same function the REST endpoint uses, so the pushed and pulled
+/// views cannot disagree.
+async fn publish_metrics(state: AppState) {
+    let mut ticker = tokio::time::interval(METRICS_INTERVAL);
+    loop {
+        ticker.tick().await;
+
+        let Some(data) = state.data() else { continue };
+
+        // Notice agents that exited on their own, or a finished task would sit
+        // at "running" for ever with a climbing elapsed time.
+        data.tasks.reap().await;
+
+        // Nobody is watching, so there is nothing to be gained by computing it.
+        if state.subscriber_count() == 0 {
+            continue;
+        }
+
+        let Ok(tasks) = aum_db::repo::list_tasks(data.db.reader(), 50).await else {
+            continue;
+        };
+
+        for task in tasks.iter().filter(|t| t.status == "running") {
+            let Ok(id) = uuid::Uuid::parse_str(&task.id) else {
+                continue;
+            };
+            match aum_engine::task_metrics(&data.db, id, &data.prices).await {
+                Ok(metrics) => {
+                    state.publish(
+                        Some(id),
+                        aum_contract::AgentEvent::MetricsSnapshot {
+                            metrics: Box::new(metrics),
+                        },
+                    );
+                }
+                Err(e) => tracing::warn!(task_id = %id, error = %e, "could not build metrics"),
+            }
+        }
+    }
 }
 
 async fn heartbeat(state: AppState) {

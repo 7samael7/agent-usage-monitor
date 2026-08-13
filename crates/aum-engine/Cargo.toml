@@ -15,9 +15,10 @@ aum-domain.workspace = true
 aum-db.workspace = true
 aum-ingest.workspace = true
 aum-adapters.workspace = true
+aum-procmon.workspace = true
 aum-pricing.workspace = true
 rust_decimal.workspace = true
-aum-procmon.workspace = true
+sqlx.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -30,4 +31,3 @@ anyhow.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"
-sqlx.workspace = true

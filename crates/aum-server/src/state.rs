@@ -16,6 +16,10 @@ use tokio::sync::{RwLock, broadcast};
 pub struct DataHandle {
     pub db: aum_db::Database,
     pub ingest: std::sync::Arc<RwLock<aum_engine::IngestState>>,
+    pub tasks: std::sync::Arc<aum_engine::TaskManager>,
+    /// Loaded once at startup. Prices are append-only, so a running process
+    /// never needs to invalidate this — a new version is a new entry.
+    pub prices: std::sync::Arc<aum_pricing::PriceTable>,
 }
 
 /// How many events the broadcast buffer holds before a slow subscriber is

@@ -195,6 +195,7 @@ dependencies = [
  "aum-db",
  "aum-domain",
  "aum-engine",
+ "aum-pricing",
  "axum",
  "chrono",
  "futures",
@@ -217,6 +218,7 @@ dependencies = [
  "aum-contract",
  "aum-db",
  "aum-engine",
+ "aum-pricing",
  "aum-server",
  "dirs",
  "rand 0.10.2",
@@ -225,6 +227,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

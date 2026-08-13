@@ -330,7 +330,9 @@ pub async fn task_totals(pool: &Pool<Sqlite>, task_id: &str) -> Result<TaskTotal
                 MIN(occurred_at)                  AS first_at,
                 MAX(occurred_at)                  AS last_at
            FROM ai_request
-          WHERE task_id = ?1",
+          -- Failed requests are counted separately. Including them here would
+          -- report the same request as both succeeded and failed.
+          WHERE task_id = ?1 AND request_kind != 'failed'",
     )
     .bind(task_id)
     .fetch_one(pool)
@@ -1121,7 +1123,7 @@ pub async fn task_totals_by_model(
                 SUM(reasoning)                    AS reasoning,
                 COUNT(reasoning)                  AS reasoning_reported_by
            FROM ai_request
-          WHERE task_id = ?1
+          WHERE task_id = ?1 AND request_kind != 'failed'
           GROUP BY model_id",
     )
     .bind(task_id)
@@ -1150,4 +1152,290 @@ pub async fn task_totals_by_model(
             ))
         })
         .collect()
+}
+
+/// Anomalies recorded against any session this task owns.
+///
+/// An anomaly means the observation is incomplete, which is enough on its own
+/// to stop a total calling itself exact.
+pub async fn anomaly_count_for_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<i64> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM ingest_anomaly
+          WHERE session_id IN (SELECT session_id FROM task_binding WHERE task_id = ?1)",
+    )
+    .bind(task_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
+}
+
+/// Requests recorded for this task that produced no usable measurement.
+pub async fn failed_request_count(pool: &Pool<Sqlite>, task_id: &str) -> Result<i64> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM ai_request WHERE task_id = ?1 AND request_kind = 'failed'",
+    )
+    .bind(task_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
+}
+
+/// Tasks, most recent first.
+pub async fn list_tasks(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<TaskRow>> {
+    let rows = sqlx::query(
+        "SELECT t.id, t.benchmark_id, t.name, t.adapter_id, t.status, t.working_dir,
+                t.model_id, t.started_at, t.ended_at,
+                (SELECT session_id FROM task_binding b WHERE b.task_id = t.id LIMIT 1) AS session_id,
+                (SELECT method     FROM task_binding b WHERE b.task_id = t.id LIMIT 1) AS method
+           FROM task t
+          ORDER BY t.created_at DESC
+          LIMIT ?1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(TaskRow {
+                id: row.try_get("id")?,
+                benchmark_id: row.try_get("benchmark_id")?,
+                name: row.try_get("name")?,
+                adapter_id: row.try_get("adapter_id")?,
+                status: row.try_get("status")?,
+                working_dir: row.try_get("working_dir")?,
+                model_id: row.try_get("model_id")?,
+                started_at: row.try_get("started_at")?,
+                ended_at: row.try_get("ended_at")?,
+                session_id: row.try_get("session_id")?,
+                binding_method: row.try_get("method")?,
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskRow {
+    pub id: String,
+    pub benchmark_id: Option<String>,
+    pub name: String,
+    pub adapter_id: String,
+    pub status: String,
+    pub working_dir: Option<String>,
+    pub model_id: Option<String>,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub session_id: Option<String>,
+    pub binding_method: Option<String>,
+}
+
+/// Record a request that terminally failed.
+///
+/// Stored as a row with **no token columns set and `reasoning` NULL**, rather
+/// than as zeros. The provider reports no usage for a failed request and we
+/// cannot assert that none was consumed, so the honest state is "a request
+/// happened and we could not measure it" — which is exactly what makes any
+/// total containing it stop calling itself exact.
+pub async fn record_failure(
+    pool: &Pool<Sqlite>,
+    adapter_id: &str,
+    session_id: &str,
+    dedup_key: &str,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+    detail: &str,
+) -> Result<bool> {
+    let binding: Option<(String, String)> =
+        sqlx::query_as("SELECT task_id, method FROM task_binding WHERE session_id = ?1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+
+    let result = sqlx::query(
+        "INSERT INTO ai_request
+           (id, adapter_id, session_id, task_id, dedup_key, occurred_at,
+            measurement_source, request_kind, attribution_method, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'unknown', 'failed', ?7, ?8)
+         ON CONFLICT(adapter_id, session_id, dedup_key) DO NOTHING",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(adapter_id)
+    .bind(session_id)
+    .bind(binding.as_ref().map(|b| b.0.clone()))
+    .bind(dedup_key)
+    .bind(to_sql_time(occurred_at))
+    .bind(binding.as_ref().map(|b| b.1.clone()))
+    .bind(now_sql())
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() > 0 {
+        record_anomaly(pool, adapter_id, Some(session_id), "request_failed", detail).await?;
+    }
+    Ok(result.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod failure_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failed_request_is_recorded_with_no_tokens_rather_than_zeros() {
+        let db = crate::open_in_memory().await.unwrap();
+        assert!(
+            record_failure(
+                db.writer(),
+                "claude_code",
+                "s1",
+                "req_1",
+                chrono::Utc::now(),
+                "OAuth session expired",
+            )
+            .await
+            .unwrap()
+        );
+
+        let (kind, reasoning, output): (String, Option<i64>, i64) = sqlx::query_as(
+            "SELECT request_kind, reasoning, output_total FROM ai_request WHERE session_id='s1'",
+        )
+        .fetch_one(db.reader())
+        .await
+        .unwrap();
+
+        assert_eq!(kind, "failed");
+        assert_eq!(reasoning, None, "a failure did not report zero reasoning");
+        assert_eq!(output, 0);
+    }
+
+    #[tokio::test]
+    async fn recording_the_same_failure_twice_does_not_duplicate_it() {
+        // Re-reading a transcript after a crash must converge here too.
+        let db = crate::open_in_memory().await.unwrap();
+        let at = chrono::Utc::now();
+        assert!(
+            record_failure(db.writer(), "claude_code", "s1", "k", at, "x")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !record_failure(db.writer(), "claude_code", "s1", "k", at, "x")
+                .await
+                .unwrap()
+        );
+
+        let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ai_request")
+            .fetch_one(db.reader())
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[tokio::test]
+    async fn a_failure_makes_its_task_stop_being_exact() {
+        // The property that matters: a task containing an unmeasured request
+        // must not present its total as exact.
+        let db = crate::open_in_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO task (id,name,adapter_id,status,created_at)
+             VALUES ('t1','x','claude_code','running', ?)",
+        )
+        .bind(now_sql())
+        .execute(db.writer())
+        .await
+        .unwrap();
+        bind_session(
+            db.writer(),
+            "s1",
+            "t1",
+            "claude_code",
+            "launched_pinned",
+            "{}",
+        )
+        .await
+        .unwrap();
+
+        record_failure(
+            db.writer(),
+            "claude_code",
+            "s1",
+            "k",
+            chrono::Utc::now(),
+            "boom",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(failed_request_count(db.reader(), "t1").await.unwrap(), 1);
+        assert!(anomaly_count_for_task(db.reader(), "t1").await.unwrap() >= 1);
+    }
+}
+
+#[cfg(test)]
+mod failure_accounting_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failed_request_is_not_also_counted_as_a_successful_one() {
+        // It happened, and it could not be measured. Counting it in both
+        // columns would overstate the successes and make the two numbers
+        // contradict each other.
+        let db = crate::open_in_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO task (id,name,adapter_id,status,created_at)
+             VALUES ('t1','x','claude_code','running', ?)",
+        )
+        .bind(now_sql())
+        .execute(db.writer())
+        .await
+        .unwrap();
+        bind_session(
+            db.writer(),
+            "s1",
+            "t1",
+            "claude_code",
+            "launched_pinned",
+            "{}",
+        )
+        .await
+        .unwrap();
+
+        upsert_usage(
+            db.writer(),
+            &UsageRecord {
+                adapter_id: "claude_code".into(),
+                session_id: "s1".into(),
+                dedup_key: "ok".into(),
+                model_id: Some("claude-opus-5".into()),
+                occurred_at: chrono::Utc::now(),
+                measurement_source: "provider_exact".into(),
+                request_kind: "turn".into(),
+                usage: aum_domain::TokenUsage::default(),
+                is_sidechain: false,
+                agent_id: None,
+                agent_type: None,
+                raw_json: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        record_failure(
+            db.writer(),
+            "claude_code",
+            "s1",
+            "boom",
+            chrono::Utc::now(),
+            "the call failed",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            task_totals(db.reader(), "t1").await.unwrap().requests,
+            1,
+            "only the successful request counts as succeeded"
+        );
+        assert_eq!(failed_request_count(db.reader(), "t1").await.unwrap(), 1);
+    }
 }

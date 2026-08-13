@@ -14,6 +14,7 @@ aum-contract.workspace = true
 aum-domain.workspace = true
 aum-db.workspace = true
 aum-engine.workspace = true
+aum-pricing.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

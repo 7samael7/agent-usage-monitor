@@ -39,6 +39,15 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/events", get(routes::events))
         .route("/v1/ingest/status", get(routes::ingest_status))
         .route("/v1/sessions", get(routes::sessions))
+        .route(
+            "/v1/tasks",
+            get(routes::list_tasks).post(routes::create_task),
+        )
+        .route("/v1/tasks/{task_id}/metrics", get(routes::task_metrics))
+        .route(
+            "/v1/tasks/{task_id}/stop",
+            axum::routing::post(routes::stop_task),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), auth::guard));
 
     Router::new()

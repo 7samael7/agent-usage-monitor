@@ -179,3 +179,168 @@ fn to_summary(t: aum_db::repo::SessionTotals) -> aum_contract::SessionSummary {
         unattributed: t.unattributed,
     }
 }
+
+// ── Tasks ───────────────────────────────────────────────────────────────────
+
+fn no_storage() -> (axum::http::StatusCode, String) {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "storage is unavailable, so tasks cannot be managed".to_owned(),
+    )
+}
+
+fn server_error(e: impl std::fmt::Display, what: &str) -> (axum::http::StatusCode, String) {
+    tracing::error!(error = %e, "{what}");
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        what.to_owned(),
+    )
+}
+
+pub async fn list_tasks(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<aum_contract::TaskSummary>>, (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+    let rows = aum_db::repo::list_tasks(data.db.reader(), 200)
+        .await
+        .map_err(|e| server_error(e, "could not list tasks"))?;
+    Ok(Json(rows.into_iter().map(to_task_summary).collect()))
+}
+
+pub async fn task_metrics(
+    State(state): State<AppState>,
+    axum::extract::Path(task_id): axum::extract::Path<uuid::Uuid>,
+) -> Result<Json<aum_contract::TaskMetrics>, (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+    let metrics = aum_engine::task_metrics(&data.db, task_id, &data.prices)
+        .await
+        .map_err(|e| server_error(e, "could not compute task metrics"))?;
+    Ok(Json(metrics))
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateTask {
+    pub name: String,
+    pub adapter_id: String,
+    pub working_dir: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub benchmark_id: Option<uuid::Uuid>,
+    /// Environment for the child process.
+    ///
+    /// Accepted, passed to the agent, and never stored or echoed back: these
+    /// routinely hold API keys.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+}
+
+pub async fn create_task(
+    State(state): State<AppState>,
+    Json(body): Json<CreateTask>,
+) -> Result<Json<aum_contract::TaskSummary>, (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+
+    let agent = aum_engine::Agent::parse(&body.adapter_id).ok_or_else(|| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("{} cannot be launched by the monitor", body.adapter_id),
+        )
+    })?;
+
+    let spec = aum_engine::TaskSpec {
+        name: body.name,
+        agent,
+        working_dir: std::path::PathBuf::from(body.working_dir),
+        prompt: body.prompt,
+        benchmark_id: body.benchmark_id,
+        env: body.env,
+    };
+
+    let task_id = data.tasks.launch(&spec).await.map_err(|e| {
+        // A missing agent is the user's problem to fix and the message says how,
+        // so it is a 400 rather than a 500.
+        let status = match e {
+            aum_engine::TaskError::AgentMissing { .. } => axum::http::StatusCode::BAD_REQUEST,
+            _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, e.to_string())
+    })?;
+
+    let rows = aum_db::repo::list_tasks(data.db.reader(), 200)
+        .await
+        .map_err(|e| server_error(e, "could not read the task back"))?;
+    let row = rows
+        .into_iter()
+        .find(|r| r.id == task_id.to_string())
+        .ok_or_else(|| server_error("missing", "the task vanished after being created"))?;
+
+    let summary = to_task_summary(row);
+    state.publish(
+        Some(task_id),
+        aum_contract::AgentEvent::TaskCreated {
+            task: Box::new(summary.clone()),
+        },
+    );
+    Ok(Json(summary))
+}
+
+pub async fn stop_task(
+    State(state): State<AppState>,
+    axum::extract::Path(task_id): axum::extract::Path<uuid::Uuid>,
+) -> Result<axum::http::StatusCode, (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+    data.tasks
+        .stop(task_id)
+        .await
+        .map_err(|e| server_error(e, "could not stop the task"))?;
+
+    state.publish(
+        Some(task_id),
+        aum_contract::AgentEvent::TaskStopped {
+            exit_code: None,
+            reason: "stopped by the user".to_owned(),
+        },
+    );
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+fn to_task_summary(row: aum_db::repo::TaskRow) -> aum_contract::TaskSummary {
+    use aum_contract::{TaskBinding, TaskStatus};
+
+    let binding = match (row.binding_method.as_deref(), row.session_id) {
+        (Some("launched_pinned"), Some(session_id)) => TaskBinding::LaunchedPinned { session_id },
+        (Some("launched_stdout"), Some(session_id)) => TaskBinding::SessionIdExact { session_id },
+        (Some("session_id_exact"), Some(session_id)) => TaskBinding::SessionIdExact { session_id },
+        // No binding yet. A launched Codex task is briefly in this state, until
+        // its stream announces a session id — and it is shown as unbound rather
+        // than as something we have guessed.
+        _ => TaskBinding::Unbound,
+    };
+
+    aum_contract::TaskSummary {
+        id: uuid::Uuid::parse_str(&row.id).unwrap_or_default(),
+        benchmark_id: row
+            .benchmark_id
+            .and_then(|b| uuid::Uuid::parse_str(&b).ok()),
+        name: row.name,
+        adapter_id: row.adapter_id,
+        status: match row.status.as_str() {
+            "running" => TaskStatus::Running,
+            "completed" => TaskStatus::Completed,
+            "failed" => TaskStatus::Failed,
+            "stopped" => TaskStatus::Stopped,
+            _ => TaskStatus::Pending,
+        },
+        binding,
+        working_dir: row.working_dir,
+        model_id: row.model_id,
+        started_at: row
+            .started_at
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
+            .map(|t| t.with_timezone(&chrono::Utc)),
+        ended_at: row
+            .ended_at
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())
+            .map(|t| t.with_timezone(&chrono::Utc)),
+    }
+}
