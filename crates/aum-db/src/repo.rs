@@ -1098,3 +1098,56 @@ mod session_tests {
         assert!(!sessions.first().unwrap().unattributed);
     }
 }
+
+/// Per-model totals for a task, which is what costing needs.
+///
+/// Cost cannot be computed from a task's grand total: a task may span models
+/// with rates that differ by an order of magnitude, so the arithmetic has to
+/// happen per model and be summed.
+pub async fn task_totals_by_model(
+    pool: &Pool<Sqlite>,
+    task_id: &str,
+) -> Result<Vec<(Option<String>, TaskTotals)>> {
+    let rows = sqlx::query(
+        "SELECT model_id,
+                COUNT(*)                          AS requests,
+                COALESCE(SUM(input_fresh), 0)     AS input_fresh,
+                COALESCE(SUM(cache_read), 0)      AS cache_read,
+                COALESCE(SUM(cache_write_5m), 0)  AS cache_write_5m,
+                COALESCE(SUM(cache_write_1h), 0)  AS cache_write_1h,
+                COALESCE(SUM(cache_write_unspecified), 0) AS cache_write_unspecified,
+                COALESCE(SUM(output_total), 0)    AS output_total,
+                COALESCE(SUM(unclassified), 0)    AS unclassified,
+                SUM(reasoning)                    AS reasoning,
+                COUNT(reasoning)                  AS reasoning_reported_by
+           FROM ai_request
+          WHERE task_id = ?1
+          GROUP BY model_id",
+    )
+    .bind(task_id)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            let model: Option<String> = row.try_get("model_id")?;
+            Ok((
+                model,
+                TaskTotals {
+                    requests: row.try_get("requests")?,
+                    input_fresh: row.try_get("input_fresh")?,
+                    cache_read: row.try_get("cache_read")?,
+                    cache_write_5m: row.try_get("cache_write_5m")?,
+                    cache_write_1h: row.try_get("cache_write_1h")?,
+                    cache_write_unspecified: row.try_get("cache_write_unspecified")?,
+                    output_total: row.try_get("output_total")?,
+                    unclassified: row.try_get("unclassified")?,
+                    reasoning: row.try_get("reasoning")?,
+                    reasoning_reported_by: row.try_get("reasoning_reported_by")?,
+                    first_at: None,
+                    last_at: None,
+                },
+            ))
+        })
+        .collect()
+}

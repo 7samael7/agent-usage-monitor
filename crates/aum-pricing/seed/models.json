@@ -1,0 +1,41 @@
+[
+  {
+    "version_id": "seed-claude-sonnet-4-5-2025-10",
+    "model_id": "claude-sonnet-4-5-20250929",
+    "rates": {
+      "input_per_mtok": "3.00",
+      "output_per_mtok": "15.00",
+      "cache_read_per_mtok": "0.30",
+      "cache_write_5m_per_mtok": "3.75",
+      "cache_write_1h_per_mtok": "6.00"
+    },
+    "effective_from": "2025-10-01T00:00:00.000Z",
+    "source": "seed"
+  },
+  {
+    "version_id": "seed-claude-haiku-4-5-2025-10",
+    "model_id": "claude-haiku-4-5-20251001",
+    "rates": {
+      "input_per_mtok": "1.00",
+      "output_per_mtok": "5.00",
+      "cache_read_per_mtok": "0.10",
+      "cache_write_5m_per_mtok": "1.25",
+      "cache_write_1h_per_mtok": "2.00"
+    },
+    "effective_from": "2025-10-01T00:00:00.000Z",
+    "source": "seed"
+  },
+  {
+    "version_id": "seed-claude-opus-4-1-2025-08",
+    "model_id": "claude-opus-4-1-20250805",
+    "rates": {
+      "input_per_mtok": "15.00",
+      "output_per_mtok": "75.00",
+      "cache_read_per_mtok": "1.50",
+      "cache_write_5m_per_mtok": "18.75",
+      "cache_write_1h_per_mtok": "30.00"
+    },
+    "effective_from": "2025-08-05T00:00:00.000Z",
+    "source": "seed"
+  }
+]

@@ -269,6 +269,27 @@ impl TokenUsage {
         self.unclassified
     }
 
+    /// Rebuild from already-normalized bands.
+    ///
+    /// Only for values that came *out* of this type — stored columns, or the
+    /// wire. It applies no provider semantics, because by this point they have
+    /// already been applied; passing a provider's raw fields here would
+    /// reintroduce exactly the double-counting the constructors prevent, which
+    /// is why the parameter is `TokenBands` and not anything a provider emits.
+    #[must_use]
+    pub const fn from_bands(b: TokenBands) -> Self {
+        Self {
+            input_fresh: b.input_fresh,
+            cache_read: b.cache_read,
+            cache_write_5m: b.cache_write_5m,
+            cache_write_1h: b.cache_write_1h,
+            cache_write_unspecified: b.cache_write_unspecified,
+            output_total: b.output_total,
+            reasoning: b.reasoning,
+            unclassified: b.unclassified,
+        }
+    }
+
     /// A measurement where the provider gave a total and nothing else.
     #[must_use]
     pub const fn unclassified_only(total: u64) -> Self {

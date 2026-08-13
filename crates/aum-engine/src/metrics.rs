@@ -461,3 +461,108 @@ mod tests {
         assert_eq!(build(&i).requests.retries, None);
     }
 }
+
+/// Cost a task from its per-model totals.
+///
+/// Costing has to happen per model and be summed: a task may span models whose
+/// rates differ by an order of magnitude, so a single grand total cannot be
+/// priced at all.
+#[must_use]
+pub fn cost_task(
+    per_model: &[(Option<String>, TaskTotals)],
+    table: &aum_pricing::PriceTable,
+) -> Measured<Money> {
+    let items: Vec<_> = per_model
+        .iter()
+        .map(|(model, totals)| (to_usage(totals), model.clone()))
+        .collect();
+    aum_pricing::cost_of_many(&items, table)
+}
+
+/// Rebuild a `TokenUsage` from stored columns.
+///
+/// The columns were written from a `TokenUsage` in the first place, so the
+/// buckets are already disjoint and no provider semantics are re-applied here.
+fn to_usage(t: &TaskTotals) -> aum_domain::TokenUsage {
+    aum_domain::TokenUsage::from_bands(aum_contract::TokenBands {
+        input_fresh: as_u64(t.input_fresh),
+        cache_read: as_u64(t.cache_read),
+        cache_write_5m: as_u64(t.cache_write_5m),
+        cache_write_1h: as_u64(t.cache_write_1h),
+        cache_write_unspecified: as_u64(t.cache_write_unspecified),
+        output_total: as_u64(t.output_total),
+        reasoning: t.reasoning.map(as_u64),
+        unclassified: as_u64(t.unclassified),
+    })
+}
+
+#[cfg(test)]
+mod cost_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use aum_contract::DisplayKind;
+
+    fn totals(input: i64, output: i64) -> TaskTotals {
+        TaskTotals {
+            requests: 1,
+            input_fresh: input,
+            output_total: output,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_task_spanning_two_models_is_priced_per_model() {
+        // A single grand total could not be priced at all: the rates differ by
+        // an order of magnitude.
+        let table = aum_pricing::PriceTable::from_entries(vec![
+            aum_pricing::ModelPricing {
+                version_id: "a".into(),
+                model_id: "expensive".into(),
+                rates: aum_pricing::Rates {
+                    input_per_mtok: rust_decimal::Decimal::from(15),
+                    output_per_mtok: rust_decimal::Decimal::from(75),
+                    cache_read_per_mtok: rust_decimal::Decimal::from(2),
+                    cache_write_5m_per_mtok: rust_decimal::Decimal::from(19),
+                    cache_write_1h_per_mtok: rust_decimal::Decimal::from(30),
+                },
+                effective_from: "2026-01-01T00:00:00.000Z".into(),
+                source: "seed".into(),
+            },
+            aum_pricing::ModelPricing {
+                version_id: "b".into(),
+                model_id: "cheap".into(),
+                rates: aum_pricing::Rates {
+                    input_per_mtok: rust_decimal::Decimal::from(1),
+                    output_per_mtok: rust_decimal::Decimal::from(5),
+                    cache_read_per_mtok: rust_decimal::Decimal::ZERO,
+                    cache_write_5m_per_mtok: rust_decimal::Decimal::from(1),
+                    cache_write_1h_per_mtok: rust_decimal::Decimal::from(2),
+                },
+                effective_from: "2026-01-01T00:00:00.000Z".into(),
+                source: "seed".into(),
+            },
+        ]);
+
+        let per_model = vec![
+            (Some("expensive".to_owned()), totals(1_000_000, 0)),
+            (Some("cheap".to_owned()), totals(1_000_000, 0)),
+        ];
+        let cost = cost_task(&per_model, &table);
+        assert_eq!(cost.display_kind(), DisplayKind::Calculated);
+        // 15 + 1, not 2 x either rate.
+        assert_eq!(
+            cost.value.unwrap().amount(),
+            rust_decimal::Decimal::from(16)
+        );
+    }
+
+    #[test]
+    fn a_task_using_an_unpriced_model_reports_a_floor() {
+        let table = aum_pricing::PriceTable::from_entries(vec![]);
+        let per_model = vec![(Some("gpt-5.6-sol".to_owned()), totals(1_000, 100))];
+        let cost = cost_task(&per_model, &table);
+        assert_eq!(cost.value, None, "never zero for an unknown model");
+        assert_eq!(cost.display_kind(), DisplayKind::Unavailable);
+    }
+}
