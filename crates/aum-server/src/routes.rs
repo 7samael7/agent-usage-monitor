@@ -777,3 +777,67 @@ async fn reload_money(state: &AppState) -> Result<(), (axum::http::StatusCode, S
     *money = crate::state::MoneyState { table, fx };
     Ok(())
 }
+
+// ── Comparison ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct CompareQuery {
+    /// Comma-separated task ids, in the order to show them.
+    #[serde(default)]
+    pub tasks: Option<String>,
+    #[serde(default)]
+    pub currency: Option<CurrencyCode>,
+    /// Divide each task's figures by the output it produced.
+    #[serde(default)]
+    pub normalize: Option<bool>,
+}
+
+/// How many tasks one comparison may hold.
+///
+/// Each row is a separate aggregate query, and a table nobody can read is not
+/// worth the round trips. Asking for more is an error rather than a silent
+/// truncation — quietly dropping rows from a comparison would make the answer
+/// wrong in a way the screen could not show.
+const MAX_COMPARED: usize = 25;
+
+pub async fn compare(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<CompareQuery>,
+) -> Result<Json<aum_contract::Comparison>, (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+
+    let raw = query.tasks.unwrap_or_default();
+    let mut ids = Vec::new();
+    for part in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let id = uuid::Uuid::parse_str(part).map_err(|_| {
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("{part} is not a task id"),
+            )
+        })?;
+        // A task named twice would appear twice and be compared with itself.
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+
+    if ids.len() > MAX_COMPARED {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            format!(
+                "a comparison holds at most {MAX_COMPARED} tasks; {} were asked for",
+                ids.len()
+            ),
+        ));
+    }
+
+    let money = data.money.read().await;
+    let ctx = money.cost_context(query.currency.map_or(aum_contract::Currency::Usd, |c| c.0));
+
+    let comparison =
+        aum_engine::compare::compare(&data.db, &ids, ctx, query.normalize == Some(true))
+            .await
+            .map_err(|e| server_error(e, "could not build the comparison"))?;
+
+    Ok(Json(comparison))
+}

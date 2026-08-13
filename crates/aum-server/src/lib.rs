@@ -42,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/adapters", get(routes::adapters))
         .route("/v1/pricing", get(routes::pricing).post(routes::set_price))
         .route("/v1/pricing/fx", axum::routing::post(routes::set_fx_rate))
+        .route("/v1/compare", get(routes::compare))
         .route(
             "/v1/tasks",
             get(routes::list_tasks).post(routes::create_task),

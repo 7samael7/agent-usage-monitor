@@ -401,3 +401,49 @@ pub struct NewFxRate {
     pub quote_currency: String,
     pub rate: Money,
 }
+
+// ── Comparison ──────────────────────────────────────────────────────────────
+
+/// One task's figures divided by the work it did.
+///
+/// Comparing raw totals answers "which task was bigger", which is rarely the
+/// question. Dividing by output tokens answers "which agent was more expensive
+/// for the same amount of produced text", which is.
+///
+/// There is deliberately **no normalized duration**. Wall-clock time between
+/// transcript writes includes tool execution, retry backoff and think time, so
+/// "milliseconds per 1,000 output tokens" would look like a throughput
+/// measurement while being mostly a measurement of how long a file search took.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct Normalized {
+    /// A full sentence naming the basis, so a column header cannot drift from
+    /// what was actually divided.
+    pub basis: String,
+    /// The divisor, shown so a reader can check the arithmetic.
+    pub denominator: u64,
+    pub total_tokens: Measured<u64>,
+    pub input_tokens: Measured<u64>,
+    pub cost: Measured<Money>,
+}
+
+/// One row of a comparison.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ComparisonRow {
+    pub task_id: uuid::Uuid,
+    pub name: String,
+    pub metrics: Box<TaskMetrics>,
+    /// `None` when the task produced no output to divide by. Not zero, and not
+    /// infinity: there is simply nothing to say yet.
+    pub normalized: Option<Normalized>,
+}
+
+/// Tasks side by side, plus what makes them incomparable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct Comparison {
+    pub rows: Vec<ComparisonRow>,
+    /// Reasons these rows are not straightforwardly comparable, in full
+    /// sentences. Computed from the rows themselves rather than assumed, and
+    /// shown next to the table rather than in a tooltip: a screenshot of a
+    /// comparison must not be more confident than the comparison was.
+    pub caveats: Vec<String>,
+}

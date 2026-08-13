@@ -219,3 +219,36 @@ export interface NewFxRate {
   quote_currency: string
   rate: Money
 }
+
+// ── Comparison ──────────────────────────────────────────────────────────────
+
+/**
+ * One task's figures divided by the work it did.
+ *
+ * There is deliberately no normalized duration. Wall-clock between transcript
+ * writes contains tool execution, retry backoff and think time, so "ms per
+ * 1,000 output tokens" would look like throughput while mostly measuring how
+ * long a file search took.
+ */
+export interface Normalized {
+  basis: string
+  /** The divisor, shown so a reader can check the arithmetic. */
+  denominator: number
+  total_tokens: Measured<number>
+  input_tokens: Measured<number>
+  cost: Measured<Money>
+}
+
+export interface ComparisonRow {
+  task_id: string
+  name: string
+  metrics: TaskMetrics
+  /** Null when the task has produced no output to divide by — not zero. */
+  normalized: Normalized | null
+}
+
+export interface Comparison {
+  rows: ComparisonRow[]
+  /** Why these rows are not straightforwardly comparable. Shown, not hidden. */
+  caveats: string[]
+}

@@ -7,6 +7,7 @@
 
 import type {
   AdapterDescriptor,
+  Comparison,
   FxRow,
   HealthResponse,
   IngestStatus,
@@ -189,4 +190,16 @@ export function savePrice(conn: Connection, price: NewPrice): Promise<PriceRow> 
 
 export function saveFxRate(conn: Connection, rate: NewFxRate): Promise<FxRow> {
   return post(conn, '/v1/pricing/fx', rate)
+}
+
+export function fetchComparison(
+  conn: Connection,
+  taskIds: string[],
+  options: { currency?: string; normalize?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<Comparison> {
+  const params = new URLSearchParams({ tasks: taskIds.join(',') })
+  if (options.currency && options.currency !== 'USD') params.set('currency', options.currency)
+  if (options.normalize) params.set('normalize', 'true')
+  return get(conn, `/v1/compare?${params.toString()}`, signal)
 }
