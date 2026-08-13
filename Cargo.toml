@@ -1,0 +1,94 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/aum-contract",
+    "crates/aum-domain",
+    "crates/aum-db",
+    "crates/aum-ingest",
+    "crates/aum-procmon",
+    "crates/aum-pricing",
+    "crates/aum-tokenizers",
+    "crates/aum-adapters",
+    "crates/aum-engine",
+    "crates/aum-server",
+    "crates/aum-sidecar",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# ── internal ─────────────────────────────────────────────────────────────────
+aum-contract = { path = "crates/aum-contract" }
+aum-domain = { path = "crates/aum-domain" }
+aum-db = { path = "crates/aum-db" }
+aum-ingest = { path = "crates/aum-ingest" }
+aum-procmon = { path = "crates/aum-procmon" }
+aum-pricing = { path = "crates/aum-pricing" }
+aum-tokenizers = { path = "crates/aum-tokenizers" }
+aum-adapters = { path = "crates/aum-adapters" }
+aum-engine = { path = "crates/aum-engine" }
+aum-server = { path = "crates/aum-server" }
+
+# ── serialization & types ────────────────────────────────────────────────────
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+chrono = { version = "0.4.45", features = ["serde"] }
+uuid = { version = "1.24.0", features = ["v4", "v7", "serde"] }
+rust_decimal = { version = "1.42.1", features = ["serde-with-str"] }
+utoipa = { version = "5.5.0", features = ["chrono", "uuid"] }
+smallvec = { version = "1.15.2", features = ["serde", "union"] }
+
+# ── async & http ─────────────────────────────────────────────────────────────
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process", "signal"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+futures = "0.3.34"
+axum = { version = "0.8.9", features = ["json", "http2"] }
+tower-http = { version = "0.7.0", features = ["cors", "trace"] }
+async-trait = "0.1.92"
+
+# ── storage ──────────────────────────────────────────────────────────────────
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "uuid", "migrate", "macros"] }
+
+# ── system & io ──────────────────────────────────────────────────────────────
+sysinfo = "0.38.4"
+notify = "8.2.0"
+memchr = "2.8.3"
+dirs = "6.0.0"
+
+# ── crypto & rng ─────────────────────────────────────────────────────────────
+subtle = "2.6.1"
+sha2 = "0.11.0"
+rand = "0.10.2"
+
+# ── diagnostics ──────────────────────────────────────────────────────────────
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+thiserror = "2.0.20"
+anyhow = "1.0.104"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+# NOTE: `clippy::arithmetic_side_effects` is deliberately NOT set workspace-wide — it
+# fires on every benign `+` and would drown the signal. It is applied narrowly, with
+# `#[deny(...)]`, to the provider-usage normalization in `aum-domain::token_usage`,
+# which is the one place where an unchecked u64 subtraction would wrap to ~1.8e19
+# in a release build and ship a plausible, enormous, wrong number.
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+# Overflow checks stay ON in release. This crate does arithmetic on provider-reported
+# counters; a silent wrap would produce a plausible, enormous, wrong number.
+overflow-checks = true
