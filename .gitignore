@@ -47,3 +47,5 @@ apps/desktop/out/
 .idea/
 .vscode/
 *.swp
+out-tsc/
+.env.local

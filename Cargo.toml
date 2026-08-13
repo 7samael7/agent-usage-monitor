@@ -45,7 +45,7 @@ utoipa = { version = "5.5.0", features = ["chrono", "uuid"] }
 smallvec = { version = "1.15.2", features = ["serde", "union"] }
 
 # ── async & http ─────────────────────────────────────────────────────────────
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process", "signal"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "io-std", "process", "signal"] }
 tokio-stream = { version = "0.1.19", features = ["sync"] }
 futures = "0.3.34"
 axum = { version = "0.8.9", features = ["json", "http2"] }

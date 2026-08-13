@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/renderer/src/*"],
+      "@aum/api-contract": ["../../packages/api-contract/src/index.ts"]
+    }
+  },
+  "include": ["src/renderer/**/*", "../../packages/api-contract/src/**/*"]
+}
