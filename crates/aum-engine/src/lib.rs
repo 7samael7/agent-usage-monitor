@@ -181,6 +181,105 @@ impl PassStats {
     }
 }
 
+/// Build a task's current metrics from storage.
+///
+/// One place, used by both the REST snapshot and the pushed one, so the two can
+/// never disagree — which matters because the stream is only ever a hint and
+/// the client is expected to fall back to the GET.
+pub async fn task_metrics(
+    db: &Database,
+    task_id: uuid::Uuid,
+    table: &aum_pricing::PriceTable,
+) -> Result<aum_contract::TaskMetrics, aum_db::DbError> {
+    use aum_contract::{Currency, TaskStatus};
+
+    let id = task_id.to_string();
+    let totals = aum_db::repo::task_totals(db.reader(), &id).await?;
+    let per_model = aum_db::repo::task_totals_by_model(db.reader(), &id).await?;
+
+    /// status, adapter_id, model_id, started_at, ended_at
+    type TaskRow = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+
+    let row: Option<TaskRow> = sqlx::query_as(
+        "SELECT status, adapter_id, model_id, started_at, ended_at FROM task WHERE id = ?1",
+    )
+    .bind(&id)
+    .fetch_optional(db.reader())
+    .await?;
+
+    let (status, adapter_id, model_id, started_at, ended_at) =
+        row.unwrap_or_else(|| ("pending".to_owned(), "unknown".to_owned(), None, None, None));
+
+    let anomalies = aum_db::repo::anomaly_count_for_task(db.reader(), &id).await?;
+    let failures = aum_db::repo::failed_request_count(db.reader(), &id).await?;
+
+    let completeness = metrics::Completeness {
+        unmeasured_requests: u32::try_from(failures).unwrap_or(u32::MAX),
+        started_mid_session: false,
+        anomalies: u32::try_from(anomalies).unwrap_or(u32::MAX),
+    };
+
+    // The model shown is whichever the requests actually used, falling back to
+    // what the task recorded. `None` stays `None`: a task that has not yet made
+    // a request genuinely has no model.
+    let observed_model = per_model.iter().find_map(|(m, _)| m.clone()).or(model_id);
+
+    let agent = tasks::Agent::parse(&adapter_id);
+
+    Ok(metrics::build(&metrics::MetricsInput {
+        task_id,
+        status: match status.as_str() {
+            "running" => TaskStatus::Running,
+            "completed" => TaskStatus::Completed,
+            "failed" => TaskStatus::Failed,
+            "stopped" => TaskStatus::Stopped,
+            _ => TaskStatus::Pending,
+        },
+        totals: &totals,
+        completeness: &completeness,
+        model_id: observed_model,
+        elapsed_ms: elapsed_ms(started_at.as_deref(), ended_at.as_deref()),
+        failed_requests: u32::try_from(failures).unwrap_or(u32::MAX),
+        // Claude Code exposes retry attempts; Codex does not expose them at
+        // all, and reporting 0 there would make it look flawless when it is
+        // merely opaque.
+        retries: match agent {
+            Some(tasks::Agent::ClaudeCode) => Some(0),
+            _ => None,
+        },
+        adapter_id: &adapter_id,
+        currency: Currency::Usd,
+        api_equivalent: metrics::cost_task(&per_model, table),
+        subscription_plan: agent.map(|a| a.subscription_plan().to_owned()),
+    }))
+}
+
+/// Wall-clock elapsed for a task, from its own timestamps.
+///
+/// Not a latency measurement and never used as one: it is the time the task
+/// existed, which includes everything the agent did between requests.
+fn elapsed_ms(started_at: Option<&str>, ended_at: Option<&str>) -> u64 {
+    let Some(start) = started_at.and_then(parse_time) else {
+        return 0;
+    };
+    let end = ended_at
+        .and_then(parse_time)
+        .unwrap_or_else(chrono::Utc::now);
+    u64::try_from(end.signed_duration_since(start).num_milliseconds()).unwrap_or(0)
+}
+
+fn parse_time(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -285,100 +384,4 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 1);
     }
-}
-
-/// Build a task's current metrics from storage.
-///
-/// One place, used by both the REST snapshot and the pushed one, so the two can
-/// never disagree — which matters because the stream is only ever a hint and
-/// the client is expected to fall back to the GET.
-pub async fn task_metrics(
-    db: &Database,
-    task_id: uuid::Uuid,
-    table: &aum_pricing::PriceTable,
-) -> Result<aum_contract::TaskMetrics, aum_db::DbError> {
-    use aum_contract::{Currency, TaskStatus};
-
-    let id = task_id.to_string();
-    let totals = aum_db::repo::task_totals(db.reader(), &id).await?;
-    let per_model = aum_db::repo::task_totals_by_model(db.reader(), &id).await?;
-
-    let row: Option<(
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT status, adapter_id, model_id, started_at, ended_at FROM task WHERE id = ?1",
-    )
-    .bind(&id)
-    .fetch_optional(db.reader())
-    .await?;
-
-    let (status, adapter_id, model_id, started_at, ended_at) =
-        row.unwrap_or_else(|| ("pending".to_owned(), "unknown".to_owned(), None, None, None));
-
-    let anomalies = aum_db::repo::anomaly_count_for_task(db.reader(), &id).await?;
-    let failures = aum_db::repo::failed_request_count(db.reader(), &id).await?;
-
-    let completeness = metrics::Completeness {
-        unmeasured_requests: u32::try_from(failures).unwrap_or(u32::MAX),
-        started_mid_session: false,
-        anomalies: u32::try_from(anomalies).unwrap_or(u32::MAX),
-    };
-
-    // The model shown is whichever the requests actually used, falling back to
-    // what the task recorded. `None` stays `None`: a task that has not yet made
-    // a request genuinely has no model.
-    let observed_model = per_model.iter().find_map(|(m, _)| m.clone()).or(model_id);
-
-    let agent = tasks::Agent::parse(&adapter_id);
-
-    Ok(metrics::build(&metrics::MetricsInput {
-        task_id,
-        status: match status.as_str() {
-            "running" => TaskStatus::Running,
-            "completed" => TaskStatus::Completed,
-            "failed" => TaskStatus::Failed,
-            "stopped" => TaskStatus::Stopped,
-            _ => TaskStatus::Pending,
-        },
-        totals: &totals,
-        completeness: &completeness,
-        model_id: observed_model,
-        elapsed_ms: elapsed_ms(started_at.as_deref(), ended_at.as_deref()),
-        failed_requests: u32::try_from(failures).unwrap_or(u32::MAX),
-        // Claude Code exposes retry attempts; Codex does not expose them at
-        // all, and reporting 0 there would make it look flawless when it is
-        // merely opaque.
-        retries: match agent {
-            Some(tasks::Agent::ClaudeCode) => Some(0),
-            _ => None,
-        },
-        adapter_id: &adapter_id,
-        currency: Currency::Usd,
-        api_equivalent: metrics::cost_task(&per_model, table),
-        subscription_plan: agent.map(|a| a.subscription_plan().to_owned()),
-    }))
-}
-
-/// Wall-clock elapsed for a task, from its own timestamps.
-///
-/// Not a latency measurement and never used as one: it is the time the task
-/// existed, which includes everything the agent did between requests.
-fn elapsed_ms(started_at: Option<&str>, ended_at: Option<&str>) -> u64 {
-    let Some(start) = started_at.and_then(parse_time) else {
-        return 0;
-    };
-    let end = ended_at
-        .and_then(parse_time)
-        .unwrap_or_else(chrono::Utc::now);
-    u64::try_from(end.signed_duration_since(start).num_milliseconds()).unwrap_or(0)
-}
-
-fn parse_time(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|t| t.with_timezone(&chrono::Utc))
 }

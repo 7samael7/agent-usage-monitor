@@ -172,8 +172,7 @@ impl TaskManager {
                     "launched_pinned",
                     &format!(r#"{{"session_id":"{session_id}","pinned_before_launch":true}}"#),
                 )
-                .await
-                .map_err(aum_db::DbError::from)?;
+                .await?;
 
                 LaunchSpec::claude_code(
                     program,
