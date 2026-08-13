@@ -396,6 +396,7 @@ mod tests {
             ..Default::default()
         })
         .unwrap()
+        .usage
     }
 
     fn record(dedup: &str, usage: TokenUsage) -> UsageRecord {
@@ -629,7 +630,8 @@ mod tests {
             total_tokens: Some(16_374),
             ..Default::default()
         })
-        .unwrap();
+        .unwrap()
+        .usage;
         upsert_usage(db.writer(), &record("codex", codex))
             .await
             .unwrap();

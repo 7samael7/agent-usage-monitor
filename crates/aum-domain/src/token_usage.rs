@@ -80,50 +80,95 @@ pub enum NormalizeError {
     ProviderTotalMismatch { computed: u64, reported: u64 },
 }
 
+/// A normalized measurement, plus anything the provider got wrong about it.
+///
+/// A provider contradicting itself is a fact about the data, not a reason to
+/// throw the measurement away. The usage is usable; the discrepancy is recorded
+/// so that any aggregate containing it can be marked less than exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Normalized {
+    pub usage: TokenUsage,
+    pub discrepancy: Option<NormalizeError>,
+}
+
+impl Normalized {
+    const fn clean(usage: TokenUsage) -> Self {
+        Self {
+            usage,
+            discrepancy: None,
+        }
+    }
+}
+
 impl TokenUsage {
     /// Normalize Anthropic usage.
     ///
     /// No arithmetic is needed on the input side: Anthropic's buckets are
-    /// already disjoint, so the fields map straight across. The only care
-    /// required is the TTL split, which must be preserved because 5-minute and
-    /// 1-hour cache writes price differently.
+    /// already disjoint, so the fields map straight across. The care required is
+    /// all in the cache-write TTL split, which must be preserved because
+    /// 5-minute and 1-hour writes price differently.
+    ///
+    /// # When the provider contradicts itself
+    ///
+    /// Measured across 14,449 real usage objects, **4** reported
+    /// `cache_creation_input_tokens: 0` while their TTL breakdown reported
+    /// thousands of 1-hour tokens. Rejecting those rows would discard a real
+    /// measurement over a field disagreement, so instead:
+    ///
+    /// * the larger of the two figures wins, because tokens that appear in
+    ///   either place were really written and really billed;
+    /// * any excess the breakdown cannot account for goes to
+    ///   `cache_write_unspecified`, so a TTL is never invented for tokens whose
+    ///   TTL is genuinely unknown;
+    /// * the disagreement is returned, so the aggregate stops being "exact".
     ///
     /// `reasoning` is always `None`. Claude Code emits `thinking` content blocks
-    /// but no count for them, and reporting `Some(0)` would be a different and
+    /// but no count for them, and `Some(0)` would be a different and
     /// unsupported claim.
     #[deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
-    pub fn from_anthropic(u: &AnthropicUsage) -> Result<Self, NormalizeError> {
-        let cache_write_total = u.cache_creation_input_tokens.unwrap_or(0);
+    pub fn from_anthropic(u: &AnthropicUsage) -> Result<Normalized, NormalizeError> {
+        let reported = u.cache_creation_input_tokens.unwrap_or(0);
 
-        let (w5, w1, unspecified) = match u.cache_creation {
+        let (w5, w1, unspecified, discrepancy) = match u.cache_creation {
             Some(c) => {
                 let five = c.ephemeral_5m_input_tokens.unwrap_or(0);
                 let hour = c.ephemeral_1h_input_tokens.unwrap_or(0);
                 let split_sum = five.saturating_add(hour);
 
-                // A mismatch means we would misprice the write. Surface it
-                // rather than guessing which number to believe.
-                if split_sum != cache_write_total {
-                    return Err(NormalizeError::CacheTtlSplitMismatch {
-                        split_sum,
-                        reported: cache_write_total,
-                    });
+                if split_sum == reported {
+                    (five, hour, 0, None)
+                } else {
+                    // Keep every token, invent no TTL. If the summary claims
+                    // more than the breakdown accounts for, the remainder is
+                    // real but its TTL is unknown.
+                    let unaccounted = reported.saturating_sub(split_sum);
+                    (
+                        five,
+                        hour,
+                        unaccounted,
+                        Some(NormalizeError::CacheTtlSplitMismatch {
+                            split_sum,
+                            reported,
+                        }),
+                    )
                 }
-                (five, hour, 0)
             }
-            // No breakdown: keep the total, but in a bucket the pricing engine
-            // knows it cannot price by TTL.
-            None => (0, 0, cache_write_total),
+            // No breakdown at all: keep the total in the bucket the pricing
+            // engine knows it cannot price by TTL.
+            None => (0, 0, reported, None),
         };
 
-        Ok(Self {
-            input_fresh: u.input_tokens.unwrap_or(0),
-            cache_read: u.cache_read_input_tokens.unwrap_or(0),
-            cache_write_5m: w5,
-            cache_write_1h: w1,
-            cache_write_unspecified: unspecified,
-            output_total: u.output_tokens.unwrap_or(0),
-            reasoning: None,
+        Ok(Normalized {
+            usage: Self {
+                input_fresh: u.input_tokens.unwrap_or(0),
+                cache_read: u.cache_read_input_tokens.unwrap_or(0),
+                cache_write_5m: w5,
+                cache_write_1h: w1,
+                cache_write_unspecified: unspecified,
+                output_total: u.output_tokens.unwrap_or(0),
+                reasoning: None,
+            },
+            discrepancy,
         })
     }
 
@@ -135,7 +180,7 @@ impl TokenUsage {
     /// is precisely where the bug would ship, and the resulting cost would be
     /// astronomically wrong while looking like a real number.
     #[deny(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
-    pub fn from_openai(u: &OpenAiUsage) -> Result<Self, NormalizeError> {
+    pub fn from_openai(u: &OpenAiUsage) -> Result<Normalized, NormalizeError> {
         let input = u.input_tokens.unwrap_or(0);
         let cached = u.cached_input_tokens.unwrap_or(0);
         let output = u.output_tokens.unwrap_or(0);
@@ -149,7 +194,7 @@ impl TokenUsage {
             return Err(NormalizeError::ReasoningExceedsOutput { output, reasoning });
         }
 
-        Ok(Self {
+        Ok(Normalized::clean(Self {
             input_fresh,
             cache_read: cached,
             // OpenAI reports no TTL for cache writes, so it cannot be priced by
@@ -159,7 +204,7 @@ impl TokenUsage {
             cache_write_unspecified: u.cache_write_input_tokens.unwrap_or(0),
             output_total: output,
             reasoning: Some(reasoning),
-        })
+        }))
     }
 
     /// Check the provider's own arithmetic without rejecting the row.
@@ -339,13 +384,13 @@ mod tests {
 
     #[test]
     fn i1_anthropic_input_field_maps_straight_to_fresh_without_arithmetic() {
-        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
+        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
         assert_eq!(u.input_fresh(), 2);
     }
 
     #[test]
     fn i2_anthropic_input_side_total_is_the_sum_of_disjoint_buckets() {
-        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
+        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
         // 2 fresh + 30,885 read + 23,610 written.
         assert_eq!(u.input_side_total(), 54_497);
         assert_eq!(u.grand_total(), 58_949);
@@ -353,7 +398,7 @@ mod tests {
 
     #[test]
     fn i3_anthropic_ttl_split_is_preserved_because_it_changes_the_price() {
-        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
+        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
         assert_eq!(u.cache_write_1h(), 23_610);
         assert_eq!(u.cache_write_5m(), 0);
         // Collapsing these into one bucket understates this request by ~24%.
@@ -362,29 +407,60 @@ mod tests {
 
     #[test]
     fn i4_anthropic_reasoning_is_none_never_some_zero() {
-        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
+        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
         assert_eq!(u.reasoning(), None);
         assert_ne!(u.reasoning(), Some(0));
     }
 
     #[test]
-    fn a_ttl_split_that_does_not_add_up_is_reported_not_guessed() {
+    fn a_self_contradicting_provider_row_keeps_its_tokens_and_reports_the_conflict() {
+        // Real and rare: 4 of 14,449 usage objects report
+        // cache_creation_input_tokens = 0 alongside a breakdown of thousands.
+        // Discarding them would lose a genuine measurement over a field
+        // disagreement, so the tokens are kept and the conflict is surfaced.
         let mut native = real_anthropic();
+        native.cache_creation_input_tokens = Some(0);
         native.cache_creation = Some(AnthropicCacheCreation {
-            ephemeral_5m_input_tokens: Some(1),
-            ephemeral_1h_input_tokens: Some(1),
+            ephemeral_5m_input_tokens: Some(0),
+            ephemeral_1h_input_tokens: Some(3_112),
         });
-        assert!(matches!(
-            TokenUsage::from_anthropic(&native),
-            Err(NormalizeError::CacheTtlSplitMismatch { .. })
-        ));
+
+        let n = TokenUsage::from_anthropic(&native).unwrap();
+        assert_eq!(n.usage.cache_write_1h(), 3_112, "the tokens must survive");
+        assert_eq!(n.usage.cache_write_unspecified(), 0);
+        assert!(
+            matches!(
+                n.discrepancy,
+                Some(NormalizeError::CacheTtlSplitMismatch { .. })
+            ),
+            "the aggregate must stop being exact"
+        );
+    }
+
+    #[test]
+    fn tokens_the_breakdown_cannot_account_for_get_no_invented_ttl() {
+        // The opposite direction: the summary claims more than the split
+        // explains. Those tokens are real, but their TTL is unknown, so they
+        // must not be priced as though it were known.
+        let mut native = real_anthropic();
+        native.cache_creation_input_tokens = Some(10_000);
+        native.cache_creation = Some(AnthropicCacheCreation {
+            ephemeral_5m_input_tokens: Some(0),
+            ephemeral_1h_input_tokens: Some(4_000),
+        });
+
+        let n = TokenUsage::from_anthropic(&native).unwrap();
+        assert_eq!(n.usage.cache_write_1h(), 4_000);
+        assert_eq!(n.usage.cache_write_unspecified(), 6_000);
+        assert_eq!(n.usage.cache_write_total(), 10_000, "no tokens lost");
+        assert!(n.discrepancy.is_some());
     }
 
     #[test]
     fn a_missing_ttl_breakdown_keeps_the_tokens_in_an_unpriceable_bucket() {
         let mut native = real_anthropic();
         native.cache_creation = None;
-        let u = TokenUsage::from_anthropic(&native).unwrap();
+        let u = TokenUsage::from_anthropic(&native).unwrap().usage;
         // Not silently assumed to be the cheaper 5-minute tier.
         assert_eq!(u.cache_write_unspecified(), 23_610);
         assert_eq!(u.cache_write_5m(), 0);
@@ -396,7 +472,7 @@ mod tests {
 
     #[test]
     fn i5_openai_cached_tokens_are_subtracted_out_of_input() {
-        let u = TokenUsage::from_openai(&real_openai()).unwrap();
+        let u = TokenUsage::from_openai(&real_openai()).unwrap().usage;
         // 16,210 total input, of which 11,008 was cached.
         assert_eq!(u.input_fresh(), 5_202);
         assert_eq!(u.cache_read(), 11_008);
@@ -406,7 +482,7 @@ mod tests {
 
     #[test]
     fn i6_openai_reasoning_stays_inside_output_and_is_not_added_again() {
-        let u = TokenUsage::from_openai(&real_openai()).unwrap();
+        let u = TokenUsage::from_openai(&real_openai()).unwrap().usage;
         assert_eq!(u.output_total(), 164);
         assert_eq!(u.reasoning(), Some(35));
         assert!(u.reasoning().unwrap() <= u.output_total());
@@ -418,7 +494,7 @@ mod tests {
             cache_write_input_tokens: Some(1_000),
             ..real_openai()
         };
-        let u = TokenUsage::from_openai(&native).unwrap();
+        let u = TokenUsage::from_openai(&native).unwrap().usage;
         // Provider says 16,374; those 1,000 written tokens were still billed.
         assert_eq!(u.grand_total(), 16_374 + 1_000);
     }
@@ -474,8 +550,8 @@ mod tests {
 
     #[test]
     fn i9_the_two_providers_become_comparable_only_after_normalization() {
-        let claude = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
-        let codex = TokenUsage::from_openai(&real_openai()).unwrap();
+        let claude = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
+        let codex = TokenUsage::from_openai(&real_openai()).unwrap().usage;
 
         // Raw fields invite the wrong conclusion: 2 vs 16,210 suggests the
         // Claude request was thousands of times smaller.
@@ -490,8 +566,8 @@ mod tests {
 
     #[test]
     fn i10_normalization_is_deterministic() {
-        let a = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
-        let b = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
+        let a = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
+        let b = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
         assert_eq!(a, b);
     }
 
@@ -499,8 +575,8 @@ mod tests {
 
     #[test]
     fn summing_a_claude_and_a_codex_request_keeps_reasoning_as_a_floor() {
-        let claude = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
-        let codex = TokenUsage::from_openai(&real_openai()).unwrap();
+        let claude = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
+        let codex = TokenUsage::from_openai(&real_openai()).unwrap().usage;
         let total = claude.merge_add(codex);
 
         assert_eq!(total.input_side_total(), 54_497 + 16_210);
@@ -511,8 +587,8 @@ mod tests {
 
     #[test]
     fn summing_two_claude_requests_leaves_reasoning_unknown() {
-        let a = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
-        let b = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
+        let a = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
+        let b = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
         assert_eq!(a.merge_add(b).reasoning(), None);
     }
 
@@ -525,13 +601,15 @@ mod tests {
             output_tokens: Some(1),
             ..Default::default()
         })
-        .unwrap();
+        .unwrap()
+        .usage;
         let final_ = TokenUsage::from_anthropic(&AnthropicUsage {
             input_tokens: Some(5),
             output_tokens: Some(378),
             ..Default::default()
         })
-        .unwrap();
+        .unwrap()
+        .usage;
 
         assert_eq!(early.merge_max(final_), final_.merge_max(early));
         assert_eq!(early.merge_max(final_).output_total(), 378);
@@ -543,7 +621,7 @@ mod tests {
     fn merging_duplicates_does_not_multiply_them() {
         // The verified failure mode: one API response written as 8 JSONL lines,
         // each repeating the whole usage object. Summing yields 8x.
-        let one = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
+        let one = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
         let deduped = (0..8).fold(TokenUsage::default(), |acc, _| acc.merge_max(one));
         assert_eq!(deduped, one);
 
@@ -553,7 +631,7 @@ mod tests {
 
     #[test]
     fn converting_to_wire_bands_preserves_every_bucket() {
-        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap();
+        let u = TokenUsage::from_anthropic(&real_anthropic()).unwrap().usage;
         let bands: TokenBands = u.into();
         assert_eq!(bands.input_side_total(), u.input_side_total());
         assert_eq!(bands.reasoning, None);
