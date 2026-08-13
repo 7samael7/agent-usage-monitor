@@ -64,7 +64,7 @@ pub async fn upsert_usage(pool: &Pool<Sqlite>, rec: &UsageRecord) -> Result<Upse
 
     let existing: Option<ExistingRow> = sqlx::query_as(
         "SELECT id, input_fresh, cache_read, cache_write_5m, cache_write_1h,
-                cache_write_unspecified, output_total, reasoning
+                cache_write_unspecified, output_total, reasoning, unclassified
            FROM ai_request
           WHERE adapter_id = ?1 AND session_id = ?2 AND dedup_key = ?3",
     )
@@ -90,9 +90,9 @@ pub async fn upsert_usage(pool: &Pool<Sqlite>, rec: &UsageRecord) -> Result<Upse
                    (id, adapter_id, session_id, task_id, dedup_key, model_id, occurred_at,
                     measurement_source, request_kind, attribution_method,
                     input_fresh, cache_read, cache_write_5m, cache_write_1h,
-                    cache_write_unspecified, output_total, reasoning,
+                    cache_write_unspecified, output_total, reasoning, unclassified,
                     is_sidechain, agent_id, agent_type, created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             )
             .bind(&id)
             .bind(&rec.adapter_id)
@@ -111,6 +111,7 @@ pub async fn upsert_usage(pool: &Pool<Sqlite>, rec: &UsageRecord) -> Result<Upse
             .bind(i64::try_from(rec.usage.cache_write_unspecified()).unwrap_or(i64::MAX))
             .bind(i64::try_from(rec.usage.output_total()).unwrap_or(i64::MAX))
             .bind(rec.usage.reasoning().map(|r| i64::try_from(r).unwrap_or(i64::MAX)))
+            .bind(i64::try_from(rec.usage.unclassified()).unwrap_or(i64::MAX))
             .bind(i64::from(rec.is_sidechain))
             .bind(&rec.agent_id)
             .bind(&rec.agent_type)
@@ -121,18 +122,19 @@ pub async fn upsert_usage(pool: &Pool<Sqlite>, rec: &UsageRecord) -> Result<Upse
             (id, UpsertOutcome::Inserted)
         }
 
-        Some((id, in_f, c_r, cw5, cw1, cwu, out, reas)) => {
-            let merged = merge_max_row((in_f, c_r, cw5, cw1, cwu, out, reas), &rec.usage);
-            let changed = merged != (in_f, c_r, cw5, cw1, cwu, out, reas);
+        Some((id, in_f, c_r, cw5, cw1, cwu, out, reas, unc)) => {
+            let existing = (in_f, c_r, cw5, cw1, cwu, out, reas, unc);
+            let merged = merge_max_row(existing, &rec.usage);
+            let changed = merged != existing;
 
             if changed {
                 sqlx::query(
                     "UPDATE ai_request
                         SET input_fresh = ?1, cache_read = ?2, cache_write_5m = ?3,
                             cache_write_1h = ?4, cache_write_unspecified = ?5,
-                            output_total = ?6, reasoning = ?7,
-                            model_id = COALESCE(model_id, ?8)
-                      WHERE id = ?9",
+                            output_total = ?6, reasoning = ?7, unclassified = ?8,
+                            model_id = COALESCE(model_id, ?9)
+                      WHERE id = ?10",
                 )
                 .bind(merged.0)
                 .bind(merged.1)
@@ -141,6 +143,7 @@ pub async fn upsert_usage(pool: &Pool<Sqlite>, rec: &UsageRecord) -> Result<Upse
                 .bind(merged.4)
                 .bind(merged.5)
                 .bind(merged.6)
+                .bind(merged.7)
                 .bind(&rec.model_id)
                 .bind(&id)
                 .execute(&mut *tx)
@@ -164,8 +167,8 @@ pub async fn upsert_usage(pool: &Pool<Sqlite>, rec: &UsageRecord) -> Result<Upse
         "INSERT INTO token_usage
            (ai_request_id, measurement_source, input_fresh, cache_read,
             cache_write_5m, cache_write_1h, cache_write_unspecified,
-            output_total, reasoning, raw_json, observed_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+            output_total, reasoning, unclassified, raw_json, observed_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
          ON CONFLICT(ai_request_id, measurement_source) DO UPDATE SET
            input_fresh             = MAX(input_fresh,             excluded.input_fresh),
            cache_read              = MAX(cache_read,              excluded.cache_read),
@@ -174,6 +177,7 @@ pub async fn upsert_usage(pool: &Pool<Sqlite>, rec: &UsageRecord) -> Result<Upse
            cache_write_unspecified = MAX(cache_write_unspecified, excluded.cache_write_unspecified),
            output_total            = MAX(output_total,            excluded.output_total),
            reasoning               = MAX(COALESCE(reasoning, -1), COALESCE(excluded.reasoning, -1)),
+           unclassified            = MAX(unclassified,            excluded.unclassified),
            raw_json                = COALESCE(excluded.raw_json, raw_json),
            observed_at             = excluded.observed_at",
     )
@@ -190,6 +194,7 @@ pub async fn upsert_usage(pool: &Pool<Sqlite>, rec: &UsageRecord) -> Result<Upse
             .reasoning()
             .map(|r| i64::try_from(r).unwrap_or(i64::MAX)),
     )
+    .bind(i64::try_from(rec.usage.unclassified()).unwrap_or(i64::MAX))
     .bind(&rec.raw_json)
     .bind(&now)
     .execute(&mut *tx)
@@ -212,9 +217,9 @@ pub async fn upsert_usage(pool: &Pool<Sqlite>, rec: &UsageRecord) -> Result<Upse
 }
 
 /// The denormalized token columns on `ai_request`, in column order.
-type UsageRow = (i64, i64, i64, i64, i64, i64, Option<i64>);
+type UsageRow = (i64, i64, i64, i64, i64, i64, Option<i64>, i64);
 /// A `UsageRow` with its row id, as selected for the merge.
-type ExistingRow = (String, i64, i64, i64, i64, i64, i64, Option<i64>);
+type ExistingRow = (String, i64, i64, i64, i64, i64, i64, Option<i64>, i64);
 
 fn merge_max_row(existing: UsageRow, incoming: &TokenUsage) -> UsageRow {
     let n = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
@@ -233,6 +238,7 @@ fn merge_max_row(existing: UsageRow, incoming: &TokenUsage) -> UsageRow {
             (None, Some(b)) => Some(n(b)),
             (None, None) => None,
         },
+        existing.7.max(n(incoming.unclassified())),
     )
 }
 
@@ -298,6 +304,9 @@ pub struct TaskTotals {
     pub cache_write_1h: i64,
     pub cache_write_unspecified: i64,
     pub output_total: i64,
+    /// Tokens counted by the provider but not attributable to input or output,
+    /// and therefore not priceable.
+    pub unclassified: i64,
     /// `None` when no contributing request reported reasoning at all.
     pub reasoning: Option<i64>,
     /// How many requests reported reasoning, for the partial-aggregate rule.
@@ -315,6 +324,7 @@ pub async fn task_totals(pool: &Pool<Sqlite>, task_id: &str) -> Result<TaskTotal
                 COALESCE(SUM(cache_write_1h), 0)  AS cache_write_1h,
                 COALESCE(SUM(cache_write_unspecified), 0) AS cache_write_unspecified,
                 COALESCE(SUM(output_total), 0)    AS output_total,
+                COALESCE(SUM(unclassified), 0)    AS unclassified,
                 SUM(reasoning)                    AS reasoning,
                 COUNT(reasoning)                  AS reasoning_reported_by,
                 MIN(occurred_at)                  AS first_at,
@@ -334,6 +344,7 @@ pub async fn task_totals(pool: &Pool<Sqlite>, task_id: &str) -> Result<TaskTotal
         cache_write_1h: row.try_get("cache_write_1h")?,
         cache_write_unspecified: row.try_get("cache_write_unspecified")?,
         output_total: row.try_get("output_total")?,
+        unclassified: row.try_get("unclassified")?,
         // SUM over all-NULL yields NULL, which is exactly right: no contributor
         // reported reasoning, so the total is unknown rather than zero.
         reasoning: row.try_get("reasoning")?,

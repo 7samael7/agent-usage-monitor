@@ -196,7 +196,9 @@ function main(): void {
   const maxIdx = rest.indexOf('--max-lines')
   const maxLines = maxIdx === -1 ? Number.POSITIVE_INFINITY : Number(rest[maxIdx + 1] ?? 0)
 
-  const lines = readFileSync(input, 'utf8').split('\n').filter((l) => l.trim() !== '')
+  const lines = readFileSync(input, 'utf8')
+    .split('\n')
+    .filter((l) => l.trim() !== '')
   const kept: string[] = []
 
   for (const line of lines) {

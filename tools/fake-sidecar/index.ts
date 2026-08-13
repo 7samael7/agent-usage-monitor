@@ -68,6 +68,7 @@ interface FakeTask {
     cache_write_unspecified: number
     output_total: number
     reasoning: number | null
+    unclassified: number
   }
   requests: number
   unmeasured: number
@@ -102,6 +103,7 @@ function makeTask(i: number): FakeTask {
       cache_write_unspecified: 0,
       output_total: 0,
       reasoning: isCodex ? 0 : null,
+      unclassified: 0,
     },
     requests: 0,
     unmeasured: 0,
@@ -154,6 +156,7 @@ function advance(task: FakeTask): void {
       cache_write_unspecified: 0,
       output_total: output,
       reasoning: task.reportsReasoning ? Math.floor(output * 0.2) : null,
+      unclassified: 0,
     },
     measurement_source: 'provider_reported',
   })

@@ -224,3 +224,131 @@ fn subagent_transcripts_carry_a_material_share_of_usage() {
         "sub-agent transcripts parsed to nothing, so their usage would be lost"
     );
 }
+
+// ── Codex ───────────────────────────────────────────────────────────────────
+
+fn rollouts() -> Vec<PathBuf> {
+    let Some(home) = dirs_home() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    transcripts(&home.join(".codex").join("sessions"), &mut out);
+    out
+}
+
+#[test]
+#[ignore = "requires real Codex rollouts on this machine"]
+fn the_codex_reconciliation_matches_what_the_corpus_actually_contains() {
+    use aum_adapters::codex::CodexAdapter;
+
+    let paths = rollouts();
+    if paths.is_empty() {
+        eprintln!("no ~/.codex/sessions; nothing to verify against");
+        return;
+    }
+
+    let adapter = CodexAdapter;
+    let (mut turns, mut off_ledger, mut rebases, mut inconsistent, mut malformed) =
+        (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
+    let (mut input_side, mut output, mut reasoning_reported) = (0_u64, 0_u64, 0_u64);
+    let mut unclassified = 0_u64;
+    let mut keys = HashSet::new();
+
+    for path in &paths {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let mut ctx = LineCtx::default();
+        for line in bytes.split(|b| *b == b'\n') {
+            // Mirror the tailer: skip lines too large to materialize.
+            if line.is_empty()
+                || line.len() > aum_ingest::MAX_LINE
+                || !adapter.is_candidate_line(line)
+            {
+                continue;
+            }
+            match adapter.parse_line(&mut ctx, line) {
+                ParseOutcome::Malformed { .. } => malformed += 1,
+                ParseOutcome::Ignored => {}
+                ParseOutcome::Signals(signals) => {
+                    for signal in signals {
+                        match signal {
+                            Signal::Usage(u) => {
+                                keys.insert(format!("{}/{}", u.session_id, u.dedup_key));
+                                input_side += u.usage.input_side_total();
+                                output += u.usage.output_total();
+                                unclassified += u.usage.unclassified();
+                                if u.usage.reasoning().is_some() {
+                                    reasoning_reported += 1;
+                                }
+                                if u.request_kind == "off_ledger" {
+                                    off_ledger += 1;
+                                } else {
+                                    turns += 1;
+                                }
+                            }
+                            Signal::Anomaly { kind, .. } => {
+                                if kind == "cumulative_rebased" {
+                                    rebases += 1;
+                                } else if kind == "provider_self_inconsistent" {
+                                    inconsistent += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!("\n─── real Codex corpus ───────────────────────────────────");
+    eprintln!("  rollout files             {}", paths.len());
+    eprintln!("  ordinary turns            {turns}");
+    eprintln!("  off-ledger (compaction)   {off_ledger}");
+    eprintln!("  counter rebases           {rebases}");
+    eprintln!("  provider self-inconsistent{inconsistent:>4}");
+    eprintln!("  distinct request keys     {}", keys.len());
+    eprintln!("  input-side tokens         {input_side}");
+    eprintln!("  output tokens             {output}");
+    eprintln!("  rows reporting reasoning  {reasoning_reported}");
+    eprintln!("  unclassified tokens       {unclassified}");
+    eprintln!("  malformed lines           {malformed}");
+    eprintln!("─────────────────────────────────────────────────────────\n");
+
+    assert!(turns > 0, "parsed no Codex usage at all");
+    assert_eq!(
+        malformed, 0,
+        "the parser failed on real, current-format lines"
+    );
+
+    // Every emitted row must have a distinct identity, or re-ingest would merge
+    // unrelated turns into one another.
+    assert_eq!(
+        keys.len() as u64,
+        turns + off_ledger,
+        "dedup keys collided across the corpus"
+    );
+
+    // Off-ledger calls are real and must not be silently dropped: ignoring them
+    // under-reports by roughly 1%.
+    assert!(
+        off_ledger > 0,
+        "expected compaction calls the provider excludes from its own total"
+    );
+
+    // Codex reports reasoning tokens on every ordinary turn. If this stops being
+    // true the capability matrix must stop claiming it. Off-ledger rows carry a
+    // bare total and no breakdown, so they are excluded.
+    assert_eq!(
+        reasoning_reported, turns,
+        "every ordinary Codex turn should carry a reasoning count"
+    );
+
+    // Compaction calls report a total with no input/output split. Those tokens
+    // are real; recording them as zero silently loses millions.
+    assert!(
+        unclassified > 1_000_000,
+        "expected the compaction calls' tokens to be kept, got {unclassified}"
+    );
+}

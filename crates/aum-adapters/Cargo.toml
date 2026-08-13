@@ -21,3 +21,4 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+aum-ingest.workspace = true

@@ -14,6 +14,7 @@
 //! those happen a handful of times per session.
 
 pub mod claude_code;
+pub mod codex;
 
 use aum_domain::TokenUsage;
 

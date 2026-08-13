@@ -46,6 +46,14 @@ pub struct TokenBands {
     /// Claude Code. It must never be serialized as `0`: zero asserts that no
     /// reasoning happened, which is a different and unsupported claim.
     pub reasoning: Option<u64>,
+    /// Tokens the provider counted but did not classify as input or output.
+    ///
+    /// Real and not rare: Codex's compaction calls report a total of ~13,000
+    /// with `input_tokens: 0` and `output_tokens: 0`. Recording those as zero
+    /// loses three million tokens across this machine's history; splitting them
+    /// by guess would be worse, because input and output rates differ by
+    /// roughly eight times. They are counted here and priced nowhere.
+    pub unclassified: u64,
 }
 
 impl TokenBands {
@@ -72,7 +80,9 @@ impl TokenBands {
 
     #[must_use]
     pub const fn grand_total(&self) -> u64 {
-        self.input_side_total().saturating_add(self.output_total)
+        self.input_side_total()
+            .saturating_add(self.output_total)
+            .saturating_add(self.unclassified)
     }
 
     /// Cache hit rate over the input side, `None` when there was no input at all
@@ -108,6 +118,7 @@ impl TokenBands {
                 (None, None) => None,
                 (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
             },
+            unclassified: self.unclassified.saturating_add(other.unclassified),
         }
     }
 
@@ -134,6 +145,7 @@ impl TokenBands {
                 (Some(a), None) => Some(a),
                 (None, b) => b,
             },
+            unclassified: self.unclassified.max(other.unclassified),
         }
     }
 }

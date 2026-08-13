@@ -18,6 +18,15 @@ export interface TokenBands {
   output_total: number
   /** `null` when the provider does not report reasoning tokens — never 0. */
   reasoning: number | null
+  /**
+   * Tokens the provider counted but did not classify as input or output.
+   *
+   * Codex's compaction calls report a total of ~13,000 with `input_tokens: 0`
+   * and `output_tokens: 0`. They are real and are counted, but they cannot be
+   * priced: input and output rates differ by roughly eight times, so splitting
+   * them by guess would be a material error. Show them; do not cost them.
+   */
+  unclassified: number
 }
 
 export function cacheWriteTotal(b: TokenBands): number {
@@ -37,7 +46,7 @@ export function inputSideTotal(b: TokenBands): number {
 }
 
 export function grandTotal(b: TokenBands): number {
-  return inputSideTotal(b) + b.output_total
+  return inputSideTotal(b) + b.output_total + b.unclassified
 }
 
 /** `null` rather than 0% when there was no input at all. */
@@ -54,4 +63,5 @@ export const EMPTY_BANDS: TokenBands = {
   cache_write_unspecified: 0,
   output_total: 0,
   reasoning: null,
+  unclassified: 0,
 }

@@ -49,6 +49,13 @@ pub struct TokenUsage {
     /// Subset of `output_total`. `None` means the provider does not report it —
     /// never `Some(0)`, which would assert that no reasoning occurred.
     reasoning: Option<u64>,
+    /// Tokens the provider counted but did not classify.
+    ///
+    /// Codex's compaction calls report a total with both `input_tokens` and
+    /// `output_tokens` at zero. Those tokens were spent; we simply do not know
+    /// on which side. Counting them as zero loses ~3M tokens across this
+    /// machine's history, and guessing a split would misprice them by up to 8x.
+    unclassified: u64,
 }
 
 /// A provider's numbers did not satisfy the provider's own stated semantics.
@@ -167,6 +174,7 @@ impl TokenUsage {
                 cache_write_unspecified: unspecified,
                 output_total: u.output_tokens.unwrap_or(0),
                 reasoning: None,
+                unclassified: 0,
             },
             discrepancy,
         })
@@ -204,6 +212,7 @@ impl TokenUsage {
             cache_write_unspecified: u.cache_write_input_tokens.unwrap_or(0),
             output_total: output,
             reasoning: Some(reasoning),
+            unclassified: 0,
         }))
     }
 
@@ -253,6 +262,27 @@ impl TokenUsage {
     pub const fn reasoning(&self) -> Option<u64> {
         self.reasoning
     }
+    /// Tokens known to have been spent, but not attributable to input or output
+    /// and therefore not priceable.
+    #[must_use]
+    pub const fn unclassified(&self) -> u64 {
+        self.unclassified
+    }
+
+    /// A measurement where the provider gave a total and nothing else.
+    #[must_use]
+    pub const fn unclassified_only(total: u64) -> Self {
+        Self {
+            input_fresh: 0,
+            cache_read: 0,
+            cache_write_5m: 0,
+            cache_write_1h: 0,
+            cache_write_unspecified: 0,
+            output_total: 0,
+            reasoning: None,
+            unclassified: total,
+        }
+    }
 
     #[must_use]
     pub const fn cache_write_total(&self) -> u64 {
@@ -276,7 +306,9 @@ impl TokenUsage {
     /// writes: those are real tokens that were really billed.
     #[must_use]
     pub const fn grand_total(&self) -> u64 {
-        self.input_side_total().saturating_add(self.output_total)
+        self.input_side_total()
+            .saturating_add(self.output_total)
+            .saturating_add(self.unclassified)
     }
 
     /// Component-wise addition, for aggregating a task.
@@ -299,6 +331,7 @@ impl TokenUsage {
                 (None, None) => None,
                 (a, b) => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
             },
+            unclassified: self.unclassified.saturating_add(other.unclassified),
         }
     }
 
@@ -325,6 +358,7 @@ impl TokenUsage {
                 (Some(a), None) => Some(a),
                 (None, b) => b,
             },
+            unclassified: self.unclassified.max(other.unclassified),
         }
     }
 }
@@ -339,6 +373,7 @@ impl From<TokenUsage> for TokenBands {
             cache_write_unspecified: u.cache_write_unspecified,
             output_total: u.output_total,
             reasoning: u.reasoning,
+            unclassified: u.unclassified,
         }
     }
 }
