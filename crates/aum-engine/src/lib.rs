@@ -5,6 +5,7 @@
 
 pub mod ingest;
 pub mod metrics;
+pub mod scan;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +18,7 @@ use tokio::sync::RwLock;
 
 pub use ingest::{PassStats, WatchRoot, ingest_file, ingest_root};
 pub use metrics::{Completeness, MetricsInput};
+pub use scan::{ScanCache, ScanResult};
 
 /// How often files are re-checked while something is running.
 ///
@@ -45,6 +47,9 @@ pub struct Engine {
     adapters: Vec<Box<dyn UsageAdapter>>,
     roots: Vec<WatchRoot>,
     state: Arc<RwLock<IngestState>>,
+    /// One cache per root, so an idle pass costs a handful of `stat` calls
+    /// rather than a full walk plus a database round-trip per file.
+    caches: tokio::sync::Mutex<Vec<ScanCache>>,
 }
 
 impl Engine {
@@ -59,6 +64,7 @@ impl Engine {
                 backfilling: true,
                 ..Default::default()
             })),
+            caches: tokio::sync::Mutex::new(vec![ScanCache::new(), ScanCache::new()]),
         }
     }
 
@@ -73,15 +79,40 @@ impl Engine {
     }
 
     /// One pass over every adapter.
+    ///
+    /// Only files whose size or mtime moved are read. Everything the cache
+    /// decides is a hint: a file wrongly judged unchanged is late, never lost,
+    /// because cursors resume exactly where they stopped and dedup keys make a
+    /// redundant read free.
     pub async fn pass(&self) -> PassStats {
         let mut total = PassStats::default();
-        for (adapter, root) in self.adapters.iter().zip(self.roots.iter()) {
-            if !root.directory.is_dir() {
-                // The agent is not installed, or has never run. Not an error.
+        let mut caches = self.caches.lock().await;
+
+        for (index, (adapter, root)) in self.adapters.iter().zip(self.roots.iter()).enumerate() {
+            let Some(cache) = caches.get_mut(index) else {
                 continue;
+            };
+            let matches = |path: &std::path::Path| root.matches_public(path);
+            let scan = cache.changed_since_last(&root.directory, &matches);
+
+            total.files_skipped = total.files_skipped.saturating_add(scan.unchanged);
+
+            for path in &scan.changed {
+                match ingest_file(&self.db, adapter.as_ref(), path).await {
+                    Ok(stats) => total.merge_public(stats),
+                    Err(e) => {
+                        // One unreadable file must not stop the pass: a
+                        // transcript may be mid-rotation or owned by someone
+                        // else. It stays in the cache, so the next real change
+                        // brings it back.
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "skipping a file this pass"
+                        );
+                    }
+                }
             }
-            let stats = ingest_root(&self.db, adapter.as_ref(), root).await;
-            total.merge_public(stats);
         }
         total
     }
@@ -112,9 +143,9 @@ impl Engine {
                 }
             }
 
-            // Poll faster while there is something to watch. There is no
-            // subscriber-count signal here yet, so the conservative interval is
-            // used whenever the last pass found anything new.
+            // Poll faster while something is actively writing. The scan itself
+            // is now cheap enough that the fast interval costs a few `stat`
+            // calls rather than a full walk.
             let interval = if stats.usage_recorded > 0 {
                 ACTIVE_INTERVAL
             } else {
@@ -135,6 +166,7 @@ impl PassStats {
     /// Accumulate another pass's numbers.
     pub fn merge_public(&mut self, other: Self) {
         self.files_scanned = self.files_scanned.saturating_add(other.files_scanned);
+        self.files_skipped = self.files_skipped.saturating_add(other.files_skipped);
         self.lines_read = self.lines_read.saturating_add(other.lines_read);
         self.usage_recorded = self.usage_recorded.saturating_add(other.usage_recorded);
         self.duplicates = self.duplicates.saturating_add(other.duplicates);

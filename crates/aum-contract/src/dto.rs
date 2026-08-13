@@ -291,6 +291,9 @@ pub struct SessionSummary {
 pub struct IngestStatus {
     pub passes: u64,
     pub files_scanned: u32,
+    /// Files examined and found unchanged. High relative to `files_scanned` is
+    /// the healthy state: it means idle passes are nearly free.
+    pub files_skipped: u32,
     pub requests_recorded: u64,
     pub anomalies: u32,
     /// True until the first pass over existing history completes, so the UI can

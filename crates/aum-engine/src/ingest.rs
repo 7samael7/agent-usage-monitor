@@ -19,6 +19,9 @@ use aum_db::repo::{self, UpsertOutcome, UsageRecord};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PassStats {
     pub files_scanned: u32,
+    /// Files examined and found unchanged, so not read at all. High relative to
+    /// `files_scanned` is the healthy state.
+    pub files_skipped: u32,
     pub lines_read: u64,
     pub usage_recorded: u64,
     /// Observations of a request already known. Expected and harmless — it is
@@ -35,6 +38,7 @@ pub struct PassStats {
 impl PassStats {
     fn merge(&mut self, other: Self) {
         self.files_scanned = self.files_scanned.saturating_add(other.files_scanned);
+        self.files_skipped = self.files_skipped.saturating_add(other.files_skipped);
         self.lines_read = self.lines_read.saturating_add(other.lines_read);
         self.usage_recorded = self.usage_recorded.saturating_add(other.usage_recorded);
         self.duplicates = self.duplicates.saturating_add(other.duplicates);
@@ -74,6 +78,13 @@ impl WatchRoot {
             extension: "jsonl",
             file_prefix: Some("rollout-"),
         }
+    }
+
+    /// Whether this root cares about a path. Public so the scan cache can use
+    /// the same rule without duplicating it.
+    #[must_use]
+    pub fn matches_public(&self, path: &Path) -> bool {
+        self.matches(path)
     }
 
     fn matches(&self, path: &Path) -> bool {

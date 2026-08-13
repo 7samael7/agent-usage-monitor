@@ -93,6 +93,7 @@ pub async fn ingest_status(State(state): State<AppState>) -> Json<aum_contract::
     Json(aum_contract::IngestStatus {
         passes: s.passes,
         files_scanned: s.cumulative.files_scanned,
+        files_skipped: s.cumulative.files_skipped,
         requests_recorded: s.cumulative.usage_recorded,
         anomalies: u32::try_from(s.cumulative.anomalies).unwrap_or(u32::MAX),
         backfilling: s.backfilling,

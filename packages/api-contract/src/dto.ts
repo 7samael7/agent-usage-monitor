@@ -126,6 +126,8 @@ export interface SessionSummary {
 export interface IngestStatus {
   passes: number
   files_scanned: number
+  /** Files examined and found unchanged; high is healthy. */
+  files_skipped: number
   requests_recorded: number
   anomalies: number
   /** True until the first pass over existing history completes. */
