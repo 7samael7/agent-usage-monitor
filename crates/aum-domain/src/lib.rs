@@ -16,5 +16,5 @@
 pub mod native;
 pub mod token_usage;
 
-pub use native::{AnthropicUsage, NativeUsage, OpenAiUsage};
+pub use native::{AnthropicCacheCreation, AnthropicUsage, NativeUsage, OpenAiUsage};
 pub use token_usage::{NormalizeError, TokenUsage};
