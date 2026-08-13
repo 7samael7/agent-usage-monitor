@@ -80,9 +80,37 @@ pub async fn serve(listener: TcpListener, state: AppState) -> std::io::Result<()
         .await
 }
 
+/// Wait for either interrupt or termination.
+///
+/// `SIGTERM` matters more than `SIGINT` here: it is what the desktop host sends
+/// on quit. Listening only for Ctrl-C means every ordinary shutdown is a hard
+/// kill after the host's grace period expires — survivable today, but once a
+/// database is attached it means never flushing cleanly, on every single quit.
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutdown signal received");
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "cannot listen for SIGTERM; interrupt only");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => tracing::info!("interrupt received; shutting down"),
+            _ = terminate.recv()        => tracing::info!("SIGTERM received; shutting down"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        tracing::info!("interrupt received; shutting down");
+    }
 }
 
 #[cfg(test)]

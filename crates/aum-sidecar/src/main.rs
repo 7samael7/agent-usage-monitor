@@ -85,8 +85,18 @@ async fn run() -> anyhow::Result<()> {
     tokio::spawn(watchdog(config.parent_pid));
 
     aum_server::serve(listener, state).await?;
+
+    // Everything that must be durable has been written by this point; from here
+    // on there is nothing left to do but leave.
+    //
+    // Exit explicitly rather than returning. The orphan watchdog reads stdin via
+    // `tokio::io::stdin()`, which does its work on a blocking thread that cannot
+    // be cancelled — and the tokio runtime waits for blocking threads when it
+    // drops. Since the host still holds the write end of that pipe, the read
+    // never returns and the process would hang after a clean shutdown, leaving
+    // the host to SIGKILL it after its grace period on every single quit.
     tracing::info!("sidecar stopped");
-    Ok(())
+    std::process::exit(0);
 }
 
 fn emit_handshake(port: u16) -> anyhow::Result<()> {
