@@ -19,7 +19,7 @@ use aum_adapters::codex::CodexAdapter;
 use aum_db::Database;
 use tokio::sync::RwLock;
 
-pub use ingest::{PassStats, WatchRoot, ingest_file, ingest_root};
+pub use ingest::{PassStats, WatchRoot, ingest_file};
 pub use metrics::{Completeness, MetricsInput};
 pub use probe::{describe_claude_desktop, describe_file_adapter, probe};
 pub use scan::{ScanCache, ScanResult};
@@ -97,14 +97,14 @@ impl Engine {
             let Some(cache) = caches.get_mut(index) else {
                 continue;
             };
-            let matches = |path: &std::path::Path| root.matches_public(path);
+            let matches = |path: &std::path::Path| root.matches(path);
             let scan = cache.changed_since_last(&root.directory, &matches);
 
             total.files_skipped = total.files_skipped.saturating_add(scan.unchanged);
 
             for path in &scan.changed {
                 match ingest_file(&self.db, adapter.as_ref(), path).await {
-                    Ok(stats) => total.merge_public(stats),
+                    Ok(stats) => total.merge(stats),
                     Err(e) => {
                         // One unreadable file must not stop the pass: a
                         // transcript may be mid-rotation or owned by someone
@@ -137,7 +137,7 @@ impl Engine {
                 let mut state = self.state.write().await;
                 state.passes = state.passes.saturating_add(1);
                 state.last = stats;
-                state.cumulative.merge_public(stats);
+                state.cumulative.merge(stats);
                 if state.passes == 1 {
                     state.backfilling = false;
                     tracing::info!(
@@ -169,7 +169,7 @@ impl Engine {
 
 impl PassStats {
     /// Accumulate another pass's numbers.
-    pub fn merge_public(&mut self, other: Self) {
+    pub fn merge(&mut self, other: Self) {
         self.files_scanned = self.files_scanned.saturating_add(other.files_scanned);
         self.files_skipped = self.files_skipped.saturating_add(other.files_skipped);
         self.lines_read = self.lines_read.saturating_add(other.lines_read);

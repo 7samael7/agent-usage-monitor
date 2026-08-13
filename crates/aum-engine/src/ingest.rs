@@ -35,22 +35,6 @@ pub struct PassStats {
     pub oversize_relevant: u64,
 }
 
-impl PassStats {
-    fn merge(&mut self, other: Self) {
-        self.files_scanned = self.files_scanned.saturating_add(other.files_scanned);
-        self.files_skipped = self.files_skipped.saturating_add(other.files_skipped);
-        self.lines_read = self.lines_read.saturating_add(other.lines_read);
-        self.usage_recorded = self.usage_recorded.saturating_add(other.usage_recorded);
-        self.duplicates = self.duplicates.saturating_add(other.duplicates);
-        self.failures = self.failures.saturating_add(other.failures);
-        self.retry_attempts = self.retry_attempts.saturating_add(other.retry_attempts);
-        self.anomalies = self.anomalies.saturating_add(other.anomalies);
-        self.oversize_relevant = self
-            .oversize_relevant
-            .saturating_add(other.oversize_relevant);
-    }
-}
-
 /// Where an adapter's data lives.
 pub struct WatchRoot {
     pub directory: PathBuf,
@@ -80,14 +64,13 @@ impl WatchRoot {
         }
     }
 
-    /// Whether this root cares about a path. Public so the scan cache can use
-    /// the same rule without duplicating it.
+    /// Whether this root cares about a path.
+    ///
+    /// One rule, used by the one thing that walks the tree. It was previously
+    /// reachable under two names for two different walkers, which is how a fix
+    /// applied to one of them can appear to do nothing at all.
     #[must_use]
-    pub fn matches_public(&self, path: &Path) -> bool {
-        self.matches(path)
-    }
-
-    fn matches(&self, path: &Path) -> bool {
+    pub fn matches(&self, path: &Path) -> bool {
         if path.extension().is_none_or(|e| e != self.extension) {
             return false;
         }
@@ -97,42 +80,6 @@ impl WatchRoot {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with(prefix)),
-        }
-    }
-}
-
-/// Every matching file under a root, newest first.
-///
-/// Newest-first matters on the first run: a machine with a gigabyte of history
-/// should populate the screen with this week's sessions immediately rather than
-/// spending its first minute on six-month-old ones.
-#[must_use]
-pub fn discover(root: &WatchRoot) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect(&root.directory, root, &mut files);
-
-    files.sort_by_key(|p| {
-        std::fs::metadata(p)
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-    });
-    files.reverse();
-    files
-}
-
-fn collect(dir: &Path, root: &WatchRoot, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            // Recursive on purpose: Claude Code's sub-agent transcripts live in
-            // a nested `subagents/` directory and carry a large share of the
-            // usage. A non-recursive scan silently loses them.
-            collect(&path, root, out);
-        } else if root.matches(&path) {
-            out.push(path);
         }
     }
 }
@@ -297,22 +244,6 @@ pub async fn ingest_file(
     .await?;
 
     Ok(stats)
-}
-
-/// One pass over every file an adapter watches.
-pub async fn ingest_root(db: &Database, adapter: &dyn UsageAdapter, root: &WatchRoot) -> PassStats {
-    let mut total = PassStats::default();
-    for path in discover(root) {
-        match ingest_file(db, adapter, &path).await {
-            Ok(stats) => total.merge(stats),
-            Err(e) => {
-                // One unreadable file must not stop the pass: a transcript may
-                // be mid-rotation, or belong to another user.
-                tracing::warn!(path = %path.display(), error = %e, "skipping a file this pass");
-            }
-        }
-    }
-    total
 }
 
 /// The parts of `LineCtx` worth carrying between passes.
@@ -488,6 +419,18 @@ mod tests {
         assert_eq!(second.usage_recorded, 1);
     }
 
+    /// What the running engine would actually pick up under a root.
+    ///
+    /// Deliberately routed through `ScanCache`, which is the only thing that
+    /// walks the tree in production. A second walker used only by tests would
+    /// let these keep passing while the real one lost files.
+    fn discovered(root: &WatchRoot) -> Vec<PathBuf> {
+        let matches = |path: &Path| root.matches(path);
+        crate::scan::ScanCache::new()
+            .changed_since_last(&root.directory, &matches)
+            .changed
+    }
+
     #[tokio::test]
     async fn discovery_finds_nested_subagent_transcripts() {
         // Sub-agent files are the majority of files and a third of the requests.
@@ -503,7 +446,7 @@ mod tests {
             extension: "jsonl",
             file_prefix: None,
         };
-        let found = discover(&root);
+        let found = discovered(&root);
         assert_eq!(found.len(), 2, "found {found:?}");
     }
 
@@ -518,7 +461,7 @@ mod tests {
             extension: "jsonl",
             file_prefix: Some("rollout-"),
         };
-        let found = discover(&root);
+        let found = discovered(&root);
         assert_eq!(found.len(), 1);
         assert!(
             found
