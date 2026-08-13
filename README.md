@@ -20,6 +20,13 @@ requests across 522 files.
 Not yet built: the local proxy for third-party clients, and OpenTelemetry ingestion (which is what
 would make latency measurable). See [`docs/architecture.md`](docs/architecture.md) for the design.
 
+There is also **no tokenizer counting**, and that is a decision rather than a gap. A tokenizer can
+only produce an estimate, and an estimate is worth having exactly where nothing better exists —
+which is nowhere here. Both agents report provider-authored counts, where an estimate that disagreed
+would be strictly worse; the one source that reports nothing, Claude Desktop, also exposes no text to
+count. `TokenizerCalculated` remains in the wire contract so a different backend can report it and
+this interface will render it as *Calculated*, but this backend never produces it.
+
 ## What it measures, and how honestly
 
 | Application | Detected | Exact tokens | Model | API-equivalent cost | Latency |

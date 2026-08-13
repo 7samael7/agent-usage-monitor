@@ -7,7 +7,6 @@ members = [
     "crates/aum-ingest",
     "crates/aum-procmon",
     "crates/aum-pricing",
-    "crates/aum-tokenizers",
     "crates/aum-adapters",
     "crates/aum-engine",
     "crates/aum-server",
@@ -30,7 +29,6 @@ aum-db = { path = "crates/aum-db" }
 aum-ingest = { path = "crates/aum-ingest" }
 aum-procmon = { path = "crates/aum-procmon" }
 aum-pricing = { path = "crates/aum-pricing" }
-aum-tokenizers = { path = "crates/aum-tokenizers" }
 aum-adapters = { path = "crates/aum-adapters" }
 aum-engine = { path = "crates/aum-engine" }
 aum-server = { path = "crates/aum-server" }

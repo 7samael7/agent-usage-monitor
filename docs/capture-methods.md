@@ -189,6 +189,15 @@ this application will not pretend otherwise.
 | Local tokenizer over text we hold | `TokenizerCalculated` | **Calculated** |
 | Claude Desktop | — | **Unavailable** |
 
+The last four rows describe how those sources *would* be classified. The
+OpenTelemetry receiver, the proxy and tokenizer counting are not implemented in
+this backend; the rows are here because the classification is part of the wire
+contract, and a different backend implementing any of them should produce these
+values. Tokenizer counting in particular is unlikely ever to be worth adding
+here: an estimate helps only where nothing better exists, and both agents
+already report provider-authored counts, while the one source that reports
+nothing also exposes no text to count.
+
 A total is only ever labelled exact when *every* contributing request was
 measured **and** the observation window itself is complete. Thirteen perfectly
 measured requests observed from halfway through a session is still not an exact
