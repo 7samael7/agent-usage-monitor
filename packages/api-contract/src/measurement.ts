@@ -22,7 +22,7 @@ export type Accuracy =
   | { kind: 'exact'; source: MeasurementSource }
   | { kind: 'calculated'; source: MeasurementSource }
   | { kind: 'estimated'; source: MeasurementSource }
-  | { kind: 'partial'; measured: number; total: number }
+  | { kind: 'partial'; measured: number; total: number; reason: string }
   | { kind: 'unavailable'; reason: UnavailableReason }
 
 /**
@@ -86,7 +86,9 @@ export function accuracySentence(accuracy: Accuracy): string {
     case 'estimated':
       return 'Estimated — an approximation, not a measurement.'
     case 'partial':
-      return `Partial — ${accuracy.measured} of ${accuracy.total} contributing measurements reported a value; the rest could not be measured, so this is a lower bound.`
+      // The backend's reason is authoritative: the counts alone can mislead, as
+      // a task observed from halfway through has measured every request it saw.
+      return `Partial — ${accuracy.reason}. This is a lower bound.`
     case 'unavailable':
       return unavailableSentence(accuracy.reason)
   }

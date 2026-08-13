@@ -120,11 +120,18 @@ pub enum Accuracy {
     Estimated {
         source: MeasurementSource,
     },
-    /// An aggregate where some contributors reported and some did not. The value
-    /// is a floor over `measured` of `total` inputs, and is rendered with `≥`.
+    /// An aggregate that is known to be incomplete. The value is a floor and is
+    /// rendered with `≥`.
+    ///
+    /// `reason` is required for the same reason it is on `Unavailable`: a
+    /// number labelled "partial" with no explanation is only marginally better
+    /// than a wrong one. It also covers the case where the counts alone would
+    /// mislead — a task observed from halfway through has every request it saw
+    /// measured, so `13 of 13` would read as complete.
     Partial {
         measured: u32,
         total: u32,
+        reason: String,
     },
     Unavailable {
         reason: UnavailableReason,
@@ -206,10 +213,14 @@ impl<T> Measured<T> {
 
     /// A floor: `measured` of `total` contributors reported a value.
     #[must_use]
-    pub const fn partial(value: T, measured: u32, total: u32) -> Self {
+    pub fn partial(value: T, measured: u32, total: u32, reason: impl Into<String>) -> Self {
         Self {
             value: Some(value),
-            accuracy: Accuracy::Partial { measured, total },
+            accuracy: Accuracy::Partial {
+                measured,
+                total,
+                reason: reason.into(),
+            },
         }
     }
 
@@ -304,7 +315,16 @@ impl Measured<u64> {
         }
 
         if measured < total {
-            return Self::partial(acc, measured, total);
+            return Self::partial(
+                acc,
+                measured,
+                total,
+                format!(
+                    "{} of {total} contributing measurements reported a value; the rest could \
+                     not be measured",
+                    total.saturating_sub(measured)
+                ),
+            );
         }
 
         // Complete: carry the weakest certainty present.
@@ -315,8 +335,9 @@ impl Measured<u64> {
             Some(Accuracy::Partial {
                 measured: m,
                 total: t,
-            }) => Self::partial(acc, *m, *t),
-            _ => Self::partial(acc, measured, total),
+                reason,
+            }) => Self::partial(acc, *m, *t, reason.clone()),
+            _ => Self::partial(acc, measured, total, "some contributors were incomplete"),
         }
     }
 }
@@ -377,7 +398,8 @@ mod tests {
             s.accuracy,
             Accuracy::Partial {
                 measured: 12,
-                total: 13
+                total: 13,
+                ..
             }
         ));
     }

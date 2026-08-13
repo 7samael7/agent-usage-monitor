@@ -125,6 +125,24 @@ dependencies = [
 [[package]]
 name = "aum-engine"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aum-adapters",
+ "aum-contract",
+ "aum-db",
+ "aum-domain",
+ "aum-ingest",
+ "aum-procmon",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "aum-ingest"

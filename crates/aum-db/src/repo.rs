@@ -705,3 +705,219 @@ mod tests {
         assert!(raw.unwrap().contains("\"input_tokens\":2"));
     }
 }
+
+// ── Ingest cursors ──────────────────────────────────────────────────────────
+
+/// Everything remembered about one file between passes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FileCursor {
+    pub file_id: String,
+    pub byte_offset: i64,
+    pub line_ordinal: i64,
+    pub size_seen: i64,
+    /// Adapter state, serialized. Codex keeps its cumulative watermark here.
+    pub adapter_state: Option<String>,
+}
+
+/// Register a file and return its stable id.
+///
+/// Identity is `(device, inode)`, so a renamed or moved file keeps its cursor
+/// rather than being re-read from the start — and two paths that happen to be
+/// the same file cannot get two cursors.
+pub async fn register_file(
+    pool: &Pool<Sqlite>,
+    adapter_id: &str,
+    device: u64,
+    inode: u64,
+    path: &str,
+) -> Result<String> {
+    let now = now_sql();
+    let device = i64::try_from(device).unwrap_or(i64::MAX);
+    let inode = i64::try_from(inode).unwrap_or(i64::MAX);
+
+    let existing: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM ingest_file WHERE device = ?1 AND inode = ?2")
+            .bind(device)
+            .bind(inode)
+            .fetch_optional(pool)
+            .await?;
+
+    if let Some((id,)) = existing {
+        // The path is a label and may change; keep it current for diagnostics.
+        sqlx::query("UPDATE ingest_file SET path = ?1, last_seen_at = ?2 WHERE id = ?3")
+            .bind(path)
+            .bind(&now)
+            .bind(&id)
+            .execute(pool)
+            .await?;
+        return Ok(id);
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO ingest_file (id, adapter_id, device, inode, path, first_seen_at, last_seen_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+    )
+    .bind(&id)
+    .bind(adapter_id)
+    .bind(device)
+    .bind(inode)
+    .bind(path)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+pub async fn load_cursor(pool: &Pool<Sqlite>, file_id: &str) -> Result<FileCursor> {
+    let row: Option<(i64, i64, i64, Option<String>)> = sqlx::query_as(
+        "SELECT byte_offset, line_ordinal, size_seen, adapter_state
+           FROM ingest_cursor WHERE file_id = ?1",
+    )
+    .bind(file_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(match row {
+        Some((byte_offset, line_ordinal, size_seen, adapter_state)) => FileCursor {
+            file_id: file_id.to_owned(),
+            byte_offset,
+            line_ordinal,
+            size_seen,
+            adapter_state,
+        },
+        None => FileCursor {
+            file_id: file_id.to_owned(),
+            ..Default::default()
+        },
+    })
+}
+
+/// Persist progress.
+///
+/// The offset written here is always just past a complete newline — a partial
+/// trailing line is never persisted, so a restart re-reads it from disk rather
+/// than resuming inside a record.
+pub async fn save_cursor(pool: &Pool<Sqlite>, cursor: &FileCursor) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO ingest_cursor
+           (file_id, byte_offset, line_ordinal, size_seen, adapter_state, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(file_id) DO UPDATE SET
+           byte_offset   = excluded.byte_offset,
+           line_ordinal  = excluded.line_ordinal,
+           size_seen     = excluded.size_seen,
+           adapter_state = excluded.adapter_state,
+           updated_at    = excluded.updated_at",
+    )
+    .bind(&cursor.file_id)
+    .bind(cursor.byte_offset)
+    .bind(cursor.line_ordinal)
+    .bind(cursor.size_seen)
+    .bind(&cursor.adapter_state)
+    .bind(now_sql())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    #[tokio::test]
+    async fn a_file_keeps_one_identity_across_renames() {
+        // Identity is (device, inode), not path: a renamed file must keep its
+        // cursor rather than being re-read from the beginning.
+        let db = crate::open_in_memory().await.unwrap();
+        let first = register_file(db.writer(), "claude_code", 1, 42, "/a/old.jsonl")
+            .await
+            .unwrap();
+        let second = register_file(db.writer(), "claude_code", 1, 42, "/b/new.jsonl")
+            .await
+            .unwrap();
+        assert_eq!(first, second);
+
+        let (path,): (String,) = sqlx::query_as("SELECT path FROM ingest_file WHERE id = ?1")
+            .bind(&first)
+            .fetch_one(db.reader())
+            .await
+            .unwrap();
+        assert_eq!(path, "/b/new.jsonl", "the label follows the file");
+    }
+
+    #[tokio::test]
+    async fn different_files_get_different_identities() {
+        let db = crate::open_in_memory().await.unwrap();
+        let a = register_file(db.writer(), "claude_code", 1, 1, "/a.jsonl")
+            .await
+            .unwrap();
+        let b = register_file(db.writer(), "claude_code", 1, 2, "/b.jsonl")
+            .await
+            .unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn an_unseen_file_starts_at_the_beginning() {
+        let db = crate::open_in_memory().await.unwrap();
+        let id = register_file(db.writer(), "codex", 1, 7, "/r.jsonl")
+            .await
+            .unwrap();
+        let cursor = load_cursor(db.reader(), &id).await.unwrap();
+        assert_eq!(cursor.byte_offset, 0);
+        assert_eq!(cursor.adapter_state, None);
+    }
+
+    #[tokio::test]
+    async fn progress_survives_a_restart() {
+        let db = crate::open_in_memory().await.unwrap();
+        let id = register_file(db.writer(), "codex", 1, 7, "/r.jsonl")
+            .await
+            .unwrap();
+
+        let cursor = FileCursor {
+            file_id: id.clone(),
+            byte_offset: 4_096,
+            line_ordinal: 12,
+            size_seen: 8_192,
+            adapter_state: Some(r#"{"cumulative":{"input_tokens":100}}"#.to_owned()),
+        };
+        save_cursor(db.writer(), &cursor).await.unwrap();
+
+        let loaded = load_cursor(db.reader(), &id).await.unwrap();
+        assert_eq!(loaded, cursor);
+    }
+
+    #[tokio::test]
+    async fn saving_twice_updates_rather_than_duplicating() {
+        let db = crate::open_in_memory().await.unwrap();
+        let id = register_file(db.writer(), "codex", 1, 7, "/r.jsonl")
+            .await
+            .unwrap();
+
+        for offset in [100, 200, 300] {
+            save_cursor(
+                db.writer(),
+                &FileCursor {
+                    file_id: id.clone(),
+                    byte_offset: offset,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let (rows,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ingest_cursor")
+            .fetch_one(db.reader())
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(
+            load_cursor(db.reader(), &id).await.unwrap().byte_offset,
+            300
+        );
+    }
+}

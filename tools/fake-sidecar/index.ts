@@ -176,7 +176,15 @@ function metricsFor(task: FakeTask): Record<string, unknown> {
 
   const totalTokens =
     task.unmeasured > 0
-      ? { value: total, accuracy: { kind: 'partial', measured, total: totalContributors } }
+      ? {
+          value: total,
+          accuracy: {
+            kind: 'partial',
+            measured,
+            total: totalContributors,
+            reason: `${task.unmeasured} request(s) could not be measured`,
+          },
+        }
       : { value: total, accuracy: { kind: 'exact', source: 'provider_reported' } }
 
   const reasoning = task.reportsReasoning
