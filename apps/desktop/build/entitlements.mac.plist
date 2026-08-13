@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Electron needs these two under the hardened runtime; without them the
+    renderer cannot start.
+  -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!--
+    The app spawns two kinds of child process: its own Rust backend, and the AI
+    agents themselves. Under a hardened runtime a child must be signed with the
+    same team identifier, which the agents are not — they are third-party
+    binaries the user installed. Without this the monitor could not launch the
+    very things it exists to measure.
+  -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+
+  <!--
+    Reading the agents' transcript files is the whole point of the application.
+  -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+
+  <!--
+    Deliberately absent: com.apple.security.network.client. The interface is
+    already blocked from the network in the main process, and the backend talks
+    only to loopback. Anything that later needs outbound access — exchange
+    rates, pricing updates — should require adding this line, so the decision is
+    visible in a diff.
+  -->
+</dict>

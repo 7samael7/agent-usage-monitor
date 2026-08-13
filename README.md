@@ -92,6 +92,20 @@ bun install                # desktop dependencies
 bun run dev                # Electron in development
 ```
 
+Tests that read this machine's own agent data are ignored by default, because
+they need data that only exists where the agents have really run:
+
+```bash
+cargo test -p aum-adapters --test real_corpus -- --ignored --nocapture
+cargo test -p aum-engine   --test probe_real  -- --ignored --nocapture
+```
+
+To package for macOS ARM64:
+
+```bash
+bun run --cwd apps/desktop package
+```
+
 The sidecar is spawned as a compiled binary, never via `cargo run` — `cargo run` writes build output to
 stdout, which would corrupt the handshake line. Rebuild it in a separate terminal:
 
