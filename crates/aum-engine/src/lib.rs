@@ -4,6 +4,7 @@
 //! and this crate decides what a task currently looks like.
 
 pub mod compare;
+pub mod desktop;
 pub mod ingest;
 pub mod metrics;
 pub mod prices;
@@ -22,7 +23,7 @@ use tokio::sync::RwLock;
 
 pub use ingest::{PassStats, WatchRoot, ingest_file};
 pub use metrics::{Completeness, MetricsInput};
-pub use probe::{describe_claude_desktop, describe_file_adapter, probe};
+pub use probe::{daily_total_from, describe_claude_desktop, describe_file_adapter, probe};
 pub use scan::{ScanCache, ScanResult};
 pub use tasks::{Agent, TaskError, TaskManager, TaskSpec};
 
@@ -52,6 +53,9 @@ pub struct Engine {
     db: Database,
     adapters: Vec<Box<dyn UsageAdapter>>,
     roots: Vec<WatchRoot>,
+    /// Where the user's files live, for the handful of things read outside a
+    /// watched root — Claude Desktop's daily counter, which is one small file.
+    home: std::path::PathBuf,
     state: Arc<RwLock<IngestState>>,
     /// One cache per root, so an idle pass costs a handful of `stat` calls
     /// rather than a full walk plus a database round-trip per file.
@@ -66,6 +70,7 @@ impl Engine {
             db,
             adapters: vec![Box::new(ClaudeCodeAdapter), Box::new(CodexAdapter)],
             roots: vec![WatchRoot::claude_code(home), WatchRoot::codex(home)],
+            home: home.to_path_buf(),
             state: Arc::new(RwLock::new(IngestState {
                 backfilling: true,
                 ..Default::default()
@@ -120,6 +125,16 @@ impl Engine {
                 }
             }
         }
+
+        // Claude Desktop keeps one running total for the current day and drops
+        // it at midnight. Sampling it here is a 69-byte read, and it is the only
+        // way the history survives. Recorded well away from the request tables:
+        // it has no model, no input/output split and no request boundary, so it
+        // must never reach a per-task or per-model total.
+        if let Err(e) = desktop::sample(&self.db, &self.home).await {
+            tracing::warn!(error = %e, "could not record Claude Desktop's daily counter");
+        }
+
         total
     }
 

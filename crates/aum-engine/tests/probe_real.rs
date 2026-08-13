@@ -74,7 +74,7 @@ fn the_matrix_reflects_what_this_machine_actually_reports() {
     );
 
     let desktop =
-        aum_engine::describe_claude_desktop(Path::new("/Applications/Claude.app").is_dir());
+        aum_engine::describe_claude_desktop(Path::new("/Applications/Claude.app").is_dir(), None);
 
     for d in [&claude, &codex, &desktop] {
         show(d);

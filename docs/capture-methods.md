@@ -107,16 +107,43 @@ either side would be a material error rather than a rounding one.
 
 ### Claude Desktop
 
-No token data of any kind. Its only quantitative artifact is:
+One number, and no structure. It writes two quantitative files.
 
 ```
 ~/Library/Application Support/Claude/plan-usage-history.json
 ```
 
-which samples plan-limit percentages for five-hour and seven-day windows. There
-is no defensible transform from "54% of a five-hour window" to a token count, so
-Claude Desktop reports `Unavailable` for every token capability — with that
-sentence as the reason.
+samples plan-limit percentages every few minutes — `{"t":…,"u":{"fh":0,"sd":13}}`,
+the five-hour and seven-day windows. There is no defensible transform from "13%
+of a seven-day window" to a token count.
+
+```
+~/Library/Application Support/Claude/buddy-tokens.json
+{ "tokens-today": { "date": "2026-08-13", "tokens": 1119656 } }
+```
+
+is a real running token count. It is read, recorded and shown — and every token
+capability still reports `Unsupported`, because each one asks something this
+number cannot answer:
+
+- **no model**, so it cannot be priced: input and output rates differ by roughly
+  five times and the split is not given either;
+- **no request boundary**, so it cannot be a request count, a latency, or a
+  per-turn anything;
+- **no session id**, so it can never be attributed to a task — and attribution
+  in this application is by identity, never by timing or coincidence;
+- **today only**: the counter resets at midnight and the previous day is
+  discarded, so the history exists only because the monitor samples it.
+
+It is therefore carried on the adapter as its own `dailyTotal`, with a sentence
+stating its scope attached to the value, and it is stored in a table the
+per-task and per-model aggregates do not read. That separation is structural
+rather than careful: there is no query that could accidentally fold a
+whole-application daily figure into a task's total.
+
+Classified `ApplicationTelemetry` — Claude Desktop computed this itself, and
+nothing in the file indicates the provider's own per-request usage — so it
+displays as **Calculated**, never Exact.
 
 ---
 
@@ -187,7 +214,8 @@ this application will not pretend otherwise.
 | OpenTelemetry cost counter | `ApplicationTelemetry` | **Calculated** |
 | Proxy-observed protocol usage | `ProtocolMetadata` | **Exact** |
 | Local tokenizer over text we hold | `TokenizerCalculated` | **Calculated** |
-| Claude Desktop | — | **Unavailable** |
+| Claude Desktop plan-limit sampler | — | **Unavailable** |
+| Claude Desktop daily token counter | `ApplicationTelemetry` | **Calculated**, whole-application daily total only |
 
 The last four rows describe how those sources *would* be classified. The
 OpenTelemetry receiver, the proxy and tokenizer counting are not implemented in

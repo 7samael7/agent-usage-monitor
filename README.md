@@ -23,8 +23,8 @@ would make latency measurable). See [`docs/architecture.md`](docs/architecture.m
 There is also **no tokenizer counting**, and that is a decision rather than a gap. A tokenizer can
 only produce an estimate, and an estimate is worth having exactly where nothing better exists —
 which is nowhere here. Both agents report provider-authored counts, where an estimate that disagreed
-would be strictly worse; the one source that reports nothing, Claude Desktop, also exposes no text to
-count. `TokenizerCalculated` remains in the wire contract so a different backend can report it and
+would be strictly worse; the one source without per-request counts, Claude Desktop, also exposes no
+text to count. `TokenizerCalculated` remains in the wire contract so a different backend can report it and
 this interface will render it as *Calculated*, but this backend never produces it.
 
 ## What it measures, and how honestly
@@ -33,16 +33,19 @@ this interface will render it as *Calculated*, but this backend never produces i
 |---|---|---|---|---|---|
 | Claude Code | yes | **yes** — provider usage relayed to disk | yes | yes | needs OTEL or proxy |
 | Codex (CLI, desktop, VS Code) | yes | **yes** — including reasoning tokens | yes | yes | needs OTEL or proxy |
-| Claude Desktop | yes | **no** — exposes no token telemetry | no | no | no |
+| Claude Desktop | yes | **no** — a daily total only, not per request | no | no | no |
 | Generic OpenAI/Anthropic client | via proxy | yes, when routed through the local proxy | yes | yes | yes |
 
 This table is not marketing copy. The application generates its own capability matrix at runtime from
 what each adapter actually observes in real data, and the Applications screen will disagree with this
 README if the tools change underneath it.
 
-**Claude Desktop deserves the emphasis.** It writes only plan-limit percentages — there is no
-defensible conversion from "54% of a five-hour window" to a token count, so the app reports
-*unavailable* rather than inventing one.
+**Claude Desktop deserves the emphasis.** It writes plan-limit percentages, from which there is no
+defensible conversion to a token count, and one running token total for the current day. That total
+is real and the app shows it — as itself, on the Applications screen, with what it covers stated
+beside it. It carries no model, no input/output split and no conversation, so it can never be
+attributed to a task or priced, and it is kept out of every aggregate that could imply otherwise.
+The app also keeps the history, because Claude Desktop discards the counter at midnight.
 
 ## Why there is no traffic sniffing
 

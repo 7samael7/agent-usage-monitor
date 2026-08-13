@@ -356,12 +356,20 @@ fn to_task_summary(row: aum_db::repo::TaskRow) -> aum_contract::TaskSummary {
 ///
 /// Derived by running the real parsers over the applications' own recent files,
 /// so the matrix reports what was observed rather than what was hoped.
-pub async fn adapters(
-    State(_state): State<AppState>,
-) -> Json<Vec<aum_contract::AdapterDescriptor>> {
+pub async fn adapters(State(state): State<AppState>) -> Json<Vec<aum_contract::AdapterDescriptor>> {
     use aum_adapters::{claude_code::ClaudeCodeAdapter, codex::CodexAdapter};
 
     let home = dirs::home_dir().unwrap_or_default();
+
+    // Read before the blocking probe, because it needs the database. A failure
+    // here costs one optional row, not the whole matrix.
+    let daily = match state.data() {
+        Some(data) => aum_db::desktop::daily_history(data.db.reader(), 30)
+            .await
+            .map(|rows| aum_engine::daily_total_from(&rows))
+            .unwrap_or_default(),
+        None => None,
+    };
 
     fn is_jsonl(p: &std::path::Path) -> bool {
         p.extension().is_some_and(|e| e == "jsonl")
@@ -397,6 +405,7 @@ pub async fn adapters(
 
         let desktop = aum_engine::describe_claude_desktop(
             std::path::Path::new("/Applications/Claude.app").is_dir(),
+            daily,
         );
 
         vec![claude, codex, desktop]

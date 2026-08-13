@@ -405,38 +405,74 @@ pub fn describe_file_adapter(
     )
 }
 
-/// Claude Desktop, which can tell us nothing.
+/// Claude Desktop, which reports one number and no structure.
 ///
-/// Included deliberately. Its only quantitative artifact is a plan-limit
-/// percentage sampler — there is no defensible transform from "54% of a
-/// five-hour window" to a token count — and saying so with the reason is far
-/// more useful than omitting the application and leaving someone to wonder
-/// whether the monitor simply missed it.
+/// Included deliberately, and described precisely, because "this application
+/// tells you nothing" turned out to be too strong. It writes two quantitative
+/// files: a plan-limit percentage sampler, from which no token count follows by
+/// any defensible means, and a single running daily token count. The count is
+/// real. It also has no model, no input/output split, no cache breakdown and no
+/// request boundary, so every capability below is genuinely unsupported — each
+/// one asks a question this number cannot answer — and the count is carried
+/// separately, as itself.
 #[must_use]
-pub fn describe_claude_desktop(installed: bool) -> AdapterDescriptor {
+pub fn describe_claude_desktop(
+    installed: bool,
+    daily: Option<aum_contract::DailyTotal>,
+) -> AdapterDescriptor {
     let mut capabilities: BTreeMap<&str, CapabilityState> = BTreeMap::new();
 
+    let has_count = daily.is_some();
+    let general = if has_count {
+        "Claude Desktop writes one running token total per day and plan-limit percentages. \
+         Neither carries a model, an input/output split, or a conversation."
+    } else {
+        "Claude Desktop records only plan-limit percentages for five-hour and seven-day windows. \
+         There is no token, model or per-conversation data to read."
+    };
+
     for name in CAPABILITIES {
+        capabilities.insert(name, unsupported(general));
+    }
+
+    // The one capability whose reason is genuinely different once a count
+    // exists: the tokens are there, the per-request structure is not.
+    if has_count {
         capabilities.insert(
-            name,
+            "exact_token_counts",
             unsupported(
-                "Claude Desktop records only plan-limit percentages for five-hour and seven-day \
-                 windows. There is no token, model or per-conversation data to read.",
+                "A whole-application running total for the current day is available, but no \
+                 per-request counts. It cannot be attributed to a task, split into input and \
+                 output, or priced.",
             ),
         );
     }
 
-    let notes = vec![
-        "Detected, but no token telemetry exists to collect.".to_owned(),
-        "Its only usage artifact is a sampler of plan-limit percentages, which cannot be converted \
-         into a token count by any defensible means."
-            .to_owned(),
-        "To measure a Claude session's tokens, use Claude Code, or route an API client through the \
-         local proxy."
+    let mut notes = vec![
+        if has_count {
+            "Detected. It reports a single daily token total and nothing more granular."
+        } else {
+            "Detected, but no token telemetry exists to collect."
+        }
+        .to_owned(),
+        "Its plan-limit sampler records percentages of a five-hour and a seven-day window, which \
+         cannot be converted into a token count by any defensible means."
             .to_owned(),
     ];
+    if has_count {
+        notes.push(
+            "The daily total is kept here because Claude Desktop keeps only the current day and \
+             discards it at midnight."
+                .to_owned(),
+        );
+    }
+    notes.push(
+        "To measure a Claude session per request — by model, split into input and output, and \
+         costed — use Claude Code, or route an API client through the local proxy."
+            .to_owned(),
+    );
 
-    finish(
+    let mut descriptor = finish(
         "claude_desktop",
         "Claude Desktop",
         if installed {
@@ -447,7 +483,40 @@ pub fn describe_claude_desktop(installed: bool) -> AdapterDescriptor {
         None,
         capabilities,
         notes,
-    )
+    );
+    descriptor.daily_total = daily;
+    descriptor
+}
+
+/// Assemble the daily total from what has been sampled.
+///
+/// The scope sentence travels with the value rather than sitting in a tooltip,
+/// so that a screenshot of the number cannot claim more than the number
+/// supports.
+#[must_use]
+pub fn daily_total_from(rows: &[aum_db::desktop::DailyRow]) -> Option<aum_contract::DailyTotal> {
+    let latest = rows.first()?;
+    Some(aum_contract::DailyTotal {
+        day: latest.day.clone(),
+        // Application telemetry, not a provider-reported figure: Claude Desktop
+        // computed this itself, and nothing in the file shows the provider's own
+        // per-request usage. Classified by who authored the number.
+        tokens: aum_contract::Measured::calculated(
+            u64::try_from(latest.tokens).unwrap_or(0),
+            aum_contract::MeasurementSource::ApplicationTelemetry,
+        ),
+        scope: "Every token Claude Desktop counted for the whole application on this day. It \
+                carries no model, no input/output split and no conversation, so it cannot be \
+                attributed to a task or priced."
+            .to_owned(),
+        history: rows
+            .iter()
+            .map(|r| aum_contract::DailyPoint {
+                day: r.day.clone(),
+                tokens: u64::try_from(r.tokens).unwrap_or(0),
+            })
+            .collect(),
+    })
 }
 
 fn finish(
@@ -470,6 +539,7 @@ fn finish(
             .map(|(k, v)| (k.to_owned(), v))
             .collect(),
         notes,
+        daily_total: None,
     }
 }
 
@@ -663,9 +733,18 @@ mod tests {
         ));
     }
 
+    fn a_daily_total() -> aum_contract::DailyTotal {
+        daily_total_from(&[aum_db::desktop::DailyRow {
+            day: "2026-08-13".to_owned(),
+            tokens: 1_119_656,
+            last_seen_at: "2026-08-13T12:00:00.000Z".to_owned(),
+        }])
+        .unwrap()
+    }
+
     #[test]
     fn claude_desktop_says_what_it_cannot_do_and_why() {
-        let d = describe_claude_desktop(true);
+        let d = describe_claude_desktop(true, None);
         assert_eq!(d.state, AdapterState::Detected);
 
         for (name, capability) in &d.capabilities {
@@ -674,9 +753,10 @@ mod tests {
                 "{name} should be unsupported for Claude Desktop"
             );
         }
+        let notes = d.notes.join(" ");
         assert!(
-            d.notes.iter().any(|n| n.contains("plan-limit percentages")),
-            "the reason must be stated, not just the verdict"
+            notes.contains("plan-limit") && notes.contains("percentages"),
+            "the reason must be stated, not just the verdict: {notes}"
         );
         assert!(
             d.notes.iter().any(|n| n.contains("Claude Code")),
@@ -685,10 +765,52 @@ mod tests {
     }
 
     #[test]
+    fn a_daily_total_does_not_make_any_capability_supported() {
+        // The count is real and every question the matrix asks — per request,
+        // by model, split into input and output — is still unanswerable. If a
+        // capability ever flipped to supported here, the number would start
+        // being treated as something it is not.
+        let d = describe_claude_desktop(true, Some(a_daily_total()));
+        for (name, capability) in &d.capabilities {
+            assert!(
+                matches!(capability, CapabilityState::Unsupported { .. }),
+                "{name} must stay unsupported even once a daily total exists"
+            );
+        }
+    }
+
+    #[test]
+    fn the_daily_total_carries_its_own_limits() {
+        let d = describe_claude_desktop(true, Some(a_daily_total()));
+        let total = d.daily_total.expect("the total should be carried");
+        assert_eq!(total.tokens.value, Some(1_119_656));
+        // Calculated, not exact: Claude Desktop computed this, the provider did
+        // not send it to us.
+        assert_eq!(
+            total.tokens.display_kind(),
+            aum_contract::DisplayKind::Calculated
+        );
+        for phrase in ["whole application", "cannot be attributed", "priced"] {
+            assert!(
+                total.scope.contains(phrase),
+                "the scope sentence should say {phrase:?}: {}",
+                total.scope
+            );
+        }
+    }
+
+    #[test]
+    fn without_a_reading_there_is_no_total_rather_than_a_zero() {
+        let d = describe_claude_desktop(true, None);
+        assert!(d.daily_total.is_none());
+        assert!(daily_total_from(&[]).is_none());
+    }
+
+    #[test]
     fn every_capability_is_reported_for_every_adapter() {
         // A missing row would read as "not applicable" when it means
         // "we forgot to check".
-        let d = describe_claude_desktop(true);
+        let d = describe_claude_desktop(true, None);
         for name in CAPABILITIES {
             assert!(
                 d.capabilities.iter().any(|(k, _)| k == name),

@@ -99,6 +99,29 @@ export interface AdapterDescriptor {
   executable_path: string | null
   capabilities: [string, CapabilityState][]
   notes: string[]
+  /**
+   * A whole-application daily total, where that is all the application reports.
+   *
+   * Null for every agent that reports per request. Never folded into a task, a
+   * session or a cost — it has no model, no input/output split and no request
+   * boundary, so it can only be shown as itself.
+   */
+  daily_total: DailyTotal | null
+}
+
+/** A per-day token count that is not attributable to anything smaller. */
+export interface DailyTotal {
+  day: string
+  tokens: Measured<number>
+  /** Full sentence naming what it covers and what it cannot do. */
+  scope: string
+  /** Earlier days, newest first — kept because the source keeps only today. */
+  history: DailyPoint[]
+}
+
+export interface DailyPoint {
+  day: string
+  tokens: number
 }
 
 export interface IngestProgress {

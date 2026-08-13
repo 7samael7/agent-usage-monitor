@@ -229,6 +229,34 @@ pub struct AdapterDescriptor {
     /// Plain-language explanation shown on the diagnostics screen when something
     /// does not work.
     pub notes: Vec<String>,
+    /// A whole-application daily total, where that is all the application
+    /// reports.
+    ///
+    /// Deliberately not a capability and deliberately not part of any task,
+    /// session or cost. Claude Desktop writes one running count per day with no
+    /// model, no input/output split and no request boundary — a real number,
+    /// but one that can only ever be shown as itself.
+    pub daily_total: Option<DailyTotal>,
+}
+
+/// A per-day token count that is not attributable to anything smaller.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DailyTotal {
+    /// Local calendar day, `YYYY-MM-DD`.
+    pub day: String,
+    pub tokens: Measured<u64>,
+    /// A full sentence stating what the number covers and what it cannot do,
+    /// carried with the value so a screenshot of it cannot overstate it.
+    pub scope: String,
+    /// Earlier days, newest first — kept by the monitor because the application
+    /// that produces the number does not keep it.
+    pub history: Vec<DailyPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct DailyPoint {
+    pub day: String,
+    pub tokens: u64,
 }
 
 // ── Ingest ───────────────────────────────────────────────────────────────────

@@ -7,10 +7,11 @@
  * capability that has not been observed shows as `?` rather than as yes.
  */
 
-import type { AdapterDescriptor, CapabilityState } from '@aum/api-contract'
+import type { AdapterDescriptor, CapabilityState, DailyTotal } from '@aum/api-contract'
 import { useEffect, useState } from 'react'
 import { useConnection } from '../../backend/backend-provider'
 import { fetchAdapters } from '../../backend/client'
+import { TokenCount } from '../../viz/measurement'
 import { Card, Empty, Screen } from '../../viz/ui'
 
 const CAPABILITY_LABELS: Record<string, string> = {
@@ -93,12 +94,58 @@ function AdapterCard({ adapter }: { adapter: AdapterDescriptor }) {
         ))}
       </div>
 
+      {adapter.daily_total && <DailyTotalPanel total={adapter.daily_total} />}
+
       {adapter.notes.map((note) => (
         <p key={note} className="mt-1.5 text-[11px] text-text-mute leading-relaxed">
           {note}
         </p>
       ))}
     </Card>
+  )
+}
+
+/**
+ * The one figure an application reports when it reports nothing per request.
+ *
+ * Rendered apart from the capability matrix and apart from every other number
+ * in the product, because it is a different kind of thing: a whole-application
+ * running total that cannot be attributed to a task or priced. The scope
+ * sentence sits beside the number rather than in a tooltip, so a screenshot of
+ * it cannot claim more than the number supports.
+ */
+function DailyTotalPanel({ total }: { total: DailyTotal }) {
+  // Yesterday first: today's is still climbing, and the finished days are the
+  // ones worth comparing against each other.
+  const earlier = total.history.filter((d) => d.day !== total.day).slice(0, 7)
+
+  return (
+    <div className="mt-3 rounded border border-border bg-surface-2 px-3 py-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[11px] text-text-mute">tokens on {total.day}</span>
+        <span className="numeric text-[15px]">
+          <TokenCount measured={total.tokens} />
+        </span>
+      </div>
+
+      <p className="mt-1.5 text-[10px] text-text-mute leading-relaxed">{total.scope}</p>
+
+      {earlier.length > 0 && (
+        <div className="mt-2 border-border border-t pt-2">
+          <div className="mb-1 text-[10px] text-text-faint">
+            earlier days, kept here because the application discards them at midnight
+          </div>
+          <ul className="flex flex-col gap-0.5">
+            {earlier.map((d) => (
+              <li key={d.day} className="flex justify-between text-[11px] text-text-dim">
+                <span className="font-mono">{d.day}</span>
+                <span className="numeric">{d.tokens.toLocaleString('en-US')}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   )
 }
 
