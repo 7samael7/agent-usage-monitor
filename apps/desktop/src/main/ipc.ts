@@ -9,6 +9,7 @@
  * what it measures.
  */
 
+import fs from 'node:fs/promises'
 import { type BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { app } from 'electron'
 import type { NetworkGuard } from './security'
@@ -19,6 +20,14 @@ export interface IpcDeps {
   guard: NetworkGuard
   getWindow: () => BrowserWindow | null
 }
+
+/**
+ * Paths the user chose in a save dialog, awaiting their write.
+ *
+ * A path is consumed by the write that follows it, so one dialog authorises one
+ * file.
+ */
+const chosenPaths = new Set<string>()
 
 export function registerIpc({ supervisor, guard, getWindow }: IpcDeps): void {
   ipcMain.handle('backend:info', () => supervisor.info)
@@ -60,9 +69,29 @@ export function registerIpc({ supervisor, guard, getWindow }: IpcDeps): void {
         defaultPath: args.defaultName,
         filters: args.filters,
       })
-      return result.canceled ? null : (result.filePath ?? null)
+      const chosen = result.canceled ? null : (result.filePath ?? null)
+      // Remembered so a later write can prove the user picked this path.
+      if (chosen) chosenPaths.add(chosen)
+      return chosen
     },
   )
+
+  /**
+   * Write text the user has chosen to save.
+   *
+   * The renderer has no filesystem access and should not gain any just to save
+   * an export, so the host writes it — but only to a path the user picked in a
+   * native dialog during this session. A path the renderer invented is refused,
+   * which keeps "save this export" from becoming "write anywhere".
+   */
+  ipcMain.handle('native:writeTextFile', async (_e, args: { path: string; contents: string }) => {
+    if (!chosenPaths.has(args.path)) {
+      throw new Error('refusing to write to a path the user did not choose')
+    }
+    chosenPaths.delete(args.path)
+    await fs.writeFile(args.path, args.contents, 'utf8')
+    return true
+  })
 
   ipcMain.handle('native:reveal', (_e, args: { path: string }) => {
     // Only reveal inside directories the application owns. A path from the

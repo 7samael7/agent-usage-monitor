@@ -9,6 +9,7 @@ import { History } from './routes/history'
 import { LiveTasks } from './routes/live-tasks'
 import { Models } from './routes/models'
 import { Settings } from './routes/settings'
+import { TaskDetail } from './routes/task-detail'
 
 export function AppShell() {
   const { info } = useBackend()
@@ -37,7 +38,7 @@ export function AppShell() {
       <div className="flex min-h-0 flex-1">
         <Sidebar current={location.path} />
         <main className="min-w-0 flex-1 overflow-auto">
-          <Route path={location.path} />
+          <Route path={location.path} params={location.params} />
         </main>
       </div>
 
@@ -46,7 +47,10 @@ export function AppShell() {
   )
 }
 
-function Route({ path }: { path: string }) {
+function Route({ path, params }: { path: string; params: URLSearchParams }) {
+  const taskId = params.get('task')
+  if (path === '/task' && taskId) return <TaskDetail taskId={taskId} />
+
   switch (path) {
     case '/live':
       return <LiveTasks />

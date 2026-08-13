@@ -59,6 +59,9 @@ const api = {
       filters?: { name: string; extensions: string[] }[]
     }): Promise<string | null> => ipcRenderer.invoke('native:pickSavePath', args),
     reveal: (path: string): Promise<boolean> => ipcRenderer.invoke('native:reveal', { path }),
+    /** Only succeeds for a path the user just chose in a save dialog. */
+    writeTextFile: (path: string, contents: string): Promise<boolean> =>
+      ipcRenderer.invoke('native:writeTextFile', { path, contents }),
   },
 } as const
 

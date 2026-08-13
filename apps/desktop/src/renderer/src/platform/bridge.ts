@@ -55,6 +55,7 @@ interface Bridge {
       filters?: { name: string; extensions: string[] }[]
     }): Promise<string | null>
     reveal(path: string): Promise<boolean>
+    writeTextFile(path: string, contents: string): Promise<boolean>
   }
   /** True when running outside Electron, so the UI can say so plainly. */
   isBrowserFallback: boolean
@@ -114,6 +115,18 @@ function browserFallback(): Bridge {
       pickDirectory: () => Promise.resolve(null),
       pickSavePath: () => Promise.resolve(null),
       reveal: () => Promise.resolve(false),
+      // In a plain browser there is no host to write through, so an export is
+      // offered as a download instead.
+      writeTextFile: (path, contents) => {
+        const blob = new Blob([contents], { type: 'text/plain' })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = path.split('/').pop() ?? 'export.txt'
+        link.click()
+        URL.revokeObjectURL(url)
+        return Promise.resolve(true)
+      },
     },
     isBrowserFallback: true,
   }

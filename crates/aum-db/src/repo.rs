@@ -1439,3 +1439,130 @@ mod failure_accounting_tests {
         assert_eq!(failed_request_count(db.reader(), "t1").await.unwrap(), 1);
     }
 }
+
+/// A time bucket of usage for a task.
+#[derive(Debug, Clone, Default)]
+pub struct Bucket {
+    /// Bucket start, ISO-8601.
+    pub at: String,
+    pub requests: i64,
+    pub input_fresh: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
+    pub output_total: i64,
+    pub unclassified: i64,
+}
+
+/// Usage over time, bucketed in the database rather than the browser.
+///
+/// A chart needs a few hundred points; a task can have tens of thousands of
+/// requests. Sending them all and reducing client-side would move megabytes to
+/// draw a line, so the grouping happens here.
+pub async fn task_series(
+    pool: &Pool<Sqlite>,
+    task_id: &str,
+    bucket_seconds: i64,
+) -> Result<Vec<Bucket>> {
+    let seconds = bucket_seconds.max(1);
+    let rows = sqlx::query(
+        // strftime('%s') on the stored ISO-8601 text gives an epoch second;
+        // integer division floors it into a bucket.
+        "SELECT strftime('%Y-%m-%dT%H:%M:%SZ',
+                    (CAST(strftime('%s', occurred_at) AS INTEGER) / ?2) * ?2,
+                    'unixepoch')                  AS at,
+                COUNT(*)                          AS requests,
+                COALESCE(SUM(input_fresh), 0)     AS input_fresh,
+                COALESCE(SUM(cache_read), 0)      AS cache_read,
+                COALESCE(SUM(cache_write_5m + cache_write_1h + cache_write_unspecified), 0)
+                                                  AS cache_write,
+                COALESCE(SUM(output_total), 0)    AS output_total,
+                COALESCE(SUM(unclassified), 0)    AS unclassified
+           FROM ai_request
+          WHERE task_id = ?1 AND request_kind != 'failed'
+          GROUP BY at
+          ORDER BY at",
+    )
+    .bind(task_id)
+    .bind(seconds)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(Bucket {
+                at: row.try_get("at")?,
+                requests: row.try_get("requests")?,
+                input_fresh: row.try_get("input_fresh")?,
+                cache_read: row.try_get("cache_read")?,
+                cache_write: row.try_get("cache_write")?,
+                output_total: row.try_get("output_total")?,
+                unclassified: row.try_get("unclassified")?,
+            })
+        })
+        .collect()
+}
+
+/// Every request for a task, for export.
+pub async fn task_requests(pool: &Pool<Sqlite>, task_id: &str) -> Result<Vec<RequestRow>> {
+    let rows = sqlx::query(
+        "SELECT id, adapter_id, session_id, model_id, occurred_at, measurement_source,
+                request_kind, input_fresh, cache_read,
+                cache_write_5m, cache_write_1h, cache_write_unspecified,
+                output_total, reasoning, unclassified, is_sidechain, agent_type
+           FROM ai_request WHERE task_id = ?1 ORDER BY occurred_at",
+    )
+    .bind(task_id)
+    .fetch_all(pool)
+    .await?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(RequestRow {
+                id: row.try_get("id")?,
+                adapter_id: row.try_get("adapter_id")?,
+                session_id: row.try_get("session_id")?,
+                model_id: row.try_get("model_id")?,
+                occurred_at: row.try_get("occurred_at")?,
+                measurement_source: row.try_get("measurement_source")?,
+                request_kind: row.try_get("request_kind")?,
+                input_fresh: row.try_get("input_fresh")?,
+                cache_read: row.try_get("cache_read")?,
+                cache_write_5m: row.try_get("cache_write_5m")?,
+                cache_write_1h: row.try_get("cache_write_1h")?,
+                cache_write_unspecified: row.try_get("cache_write_unspecified")?,
+                output_total: row.try_get("output_total")?,
+                reasoning: row.try_get("reasoning")?,
+                unclassified: row.try_get("unclassified")?,
+                is_sidechain: row.try_get::<i64, _>("is_sidechain")? == 1,
+                agent_type: row.try_get("agent_type")?,
+            })
+        })
+        .collect()
+}
+
+/// One request, as exported.
+///
+/// Deliberately contains no prompt or response text: content capture is off by
+/// default, so there is none to export, and an export must not become the one
+/// path by which conversation data leaves the machine.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RequestRow {
+    pub id: String,
+    pub adapter_id: String,
+    pub session_id: String,
+    pub model_id: Option<String>,
+    pub occurred_at: String,
+    pub measurement_source: String,
+    pub request_kind: String,
+    pub input_fresh: i64,
+    pub cache_read: i64,
+    pub cache_write_5m: i64,
+    pub cache_write_1h: i64,
+    pub cache_write_unspecified: i64,
+    pub output_total: i64,
+    /// `null` where the provider does not report reasoning. Never 0.
+    pub reasoning: Option<i64>,
+    pub unclassified: i64,
+    pub is_sidechain: bool,
+    pub agent_type: Option<String>,
+}

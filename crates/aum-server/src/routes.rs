@@ -401,3 +401,126 @@ pub async fn adapters(
 
     Json(descriptors)
 }
+
+// ── Series and export ───────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct SeriesQuery {
+    /// Bucket width. Defaults to a minute, which gives a readable line for a
+    /// task of any realistic length.
+    #[serde(default)]
+    pub bucket_seconds: Option<i64>,
+}
+
+/// Usage over time, bucketed in the database.
+pub async fn task_series(
+    State(state): State<AppState>,
+    axum::extract::Path(task_id): axum::extract::Path<uuid::Uuid>,
+    axum::extract::Query(query): axum::extract::Query<SeriesQuery>,
+) -> Result<Json<Vec<aum_contract::SeriesPoint>>, (axum::http::StatusCode, String)> {
+    let data = state.data().ok_or_else(no_storage)?;
+    let buckets = aum_db::repo::task_series(
+        data.db.reader(),
+        &task_id.to_string(),
+        query.bucket_seconds.unwrap_or(60),
+    )
+    .await
+    .map_err(|e| server_error(e, "could not read the series"))?;
+
+    Ok(Json(
+        buckets
+            .into_iter()
+            .map(|b| aum_contract::SeriesPoint {
+                at: b.at,
+                requests: u32::try_from(b.requests).unwrap_or(0),
+                input_fresh: u64::try_from(b.input_fresh).unwrap_or(0),
+                cache_read: u64::try_from(b.cache_read).unwrap_or(0),
+                cache_write: u64::try_from(b.cache_write).unwrap_or(0),
+                output_total: u64::try_from(b.output_total).unwrap_or(0),
+                unclassified: u64::try_from(b.unclassified).unwrap_or(0),
+            })
+            .collect(),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ExportQuery {
+    /// `json` or `csv`.
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// Export a task's requests.
+///
+/// Metadata only. Content capture is off by default so there is none to export,
+/// and an export must not become the one path by which conversation data leaves
+/// the machine.
+pub async fn export_task(
+    State(state): State<AppState>,
+    axum::extract::Path(task_id): axum::extract::Path<uuid::Uuid>,
+    axum::extract::Query(query): axum::extract::Query<ExportQuery>,
+) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
+    use axum::response::IntoResponse as _;
+
+    let data = state.data().ok_or_else(no_storage)?;
+    let id = task_id.to_string();
+
+    let rows = aum_db::repo::task_requests(data.db.reader(), &id)
+        .await
+        .map_err(|e| server_error(e, "could not read the task's requests"))?;
+
+    if query.format.as_deref() == Some("csv") {
+        let mut out = String::from(
+            "occurred_at,adapter,session_id,model,measurement_source,request_kind,\
+             input_fresh,cache_read,cache_write_5m,cache_write_1h,cache_write_unspecified,\
+             output_total,reasoning,unclassified,is_sidechain,agent_type\n",
+        );
+        for r in &rows {
+            out.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                r.occurred_at,
+                r.adapter_id,
+                r.session_id,
+                r.model_id.as_deref().unwrap_or(""),
+                r.measurement_source,
+                r.request_kind,
+                r.input_fresh,
+                r.cache_read,
+                r.cache_write_5m,
+                r.cache_write_1h,
+                r.cache_write_unspecified,
+                r.output_total,
+                // An empty cell, not a zero: the provider reported nothing, and
+                // a spreadsheet summing a column of zeros would be wrong.
+                r.reasoning.map(|v| v.to_string()).unwrap_or_default(),
+                r.unclassified,
+                r.is_sidechain,
+                r.agent_type.as_deref().unwrap_or(""),
+            ));
+        }
+        return Ok((
+            [
+                (axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+                (
+                    axum::http::header::CONTENT_DISPOSITION,
+                    "attachment; filename=\"task-export.csv\"",
+                ),
+            ],
+            out,
+        )
+            .into_response());
+    }
+
+    let metrics = aum_engine::task_metrics(&data.db, task_id, &data.prices)
+        .await
+        .map_err(|e| server_error(e, "could not compute task metrics"))?;
+
+    Ok(Json(serde_json::json!({
+        "exported_at": chrono::Utc::now(),
+        "task_id": id,
+        "metrics": metrics,
+        "requests": rows,
+        "note": "Metadata only. Prompt and response text are not recorded by this application.",
+    }))
+    .into_response())
+}

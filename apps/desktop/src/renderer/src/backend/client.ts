@@ -10,6 +10,7 @@ import type {
   HealthResponse,
   IngestStatus,
   MetaResponse,
+  SeriesPoint,
   SessionSummary,
   TaskMetrics,
   TaskSummary,
@@ -113,4 +114,37 @@ export async function stopTask(conn: Connection, taskId: string): Promise<void> 
   if (!res.ok) {
     throw new ApiError(res.status, await res.text().catch(() => res.statusText))
   }
+}
+
+export function fetchTaskSeries(
+  conn: Connection,
+  taskId: string,
+  bucketSeconds = 60,
+  signal?: AbortSignal,
+): Promise<SeriesPoint[]> {
+  return get(conn, `/v1/tasks/${taskId}/series?bucket_seconds=${bucketSeconds}`, signal)
+}
+
+/** A URL the user can open or save. The export itself is metadata only. */
+export function exportUrl(conn: Connection, taskId: string, format: 'json' | 'csv'): string {
+  return `${conn.baseUrl}/v1/tasks/${taskId}/export?format=${format}`
+}
+
+/**
+ * Fetch an export as text.
+ *
+ * Goes through fetch rather than a plain link because the API needs a bearer
+ * header, and a link cannot carry one — putting the token in a query string
+ * would leak it into logs and history.
+ */
+export async function fetchExport(
+  conn: Connection,
+  taskId: string,
+  format: 'json' | 'csv',
+): Promise<string> {
+  const res = await fetch(exportUrl(conn, taskId, format), {
+    headers: { Authorization: `Bearer ${conn.token}` },
+  })
+  if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => res.statusText))
+  return res.text()
 }

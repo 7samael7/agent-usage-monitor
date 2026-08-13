@@ -45,6 +45,8 @@ pub fn router(state: AppState) -> Router {
             get(routes::list_tasks).post(routes::create_task),
         )
         .route("/v1/tasks/{task_id}/metrics", get(routes::task_metrics))
+        .route("/v1/tasks/{task_id}/series", get(routes::task_series))
+        .route("/v1/tasks/{task_id}/export", get(routes::export_task))
         .route(
             "/v1/tasks/{task_id}/stop",
             axum::routing::post(routes::stop_task),

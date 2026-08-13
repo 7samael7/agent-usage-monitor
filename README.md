@@ -13,8 +13,12 @@ run two agents at the same task, side by side, and see exactly what each one con
 
 ## Status
 
-Early development. See [`docs/architecture.md`](docs/architecture.md) for the design, and the
-milestone list below for what works today.
+Working. It reads both agents' usage, launches and monitors tasks, prices what it can, and shows
+what it found — including what it could not measure. Verified against a real corpus of 43,761
+requests across 522 files.
+
+Not yet built: the local proxy for third-party clients, and OpenTelemetry ingestion (which is what
+would make latency measurable). See [`docs/architecture.md`](docs/architecture.md) for the design.
 
 ## What it measures, and how honestly
 
@@ -126,11 +130,11 @@ asserts that nothing unredacted is present, and `.gitignore` blocks `*.jsonl` ou
 | Document | Contents |
 |---|---|
 | [`docs/architecture.md`](docs/architecture.md) | design, data sources, normalization, attribution |
-| `docs/capture-methods.md` | the four capture levels and per-adapter fidelity |
-| `docs/privacy.md` | what is stored, where, and what leaves the machine |
-| `docs/benchmarking.md` | running comparisons and their comparability caveats |
-| `docs/adapter-development.md` | adding support for a new AI application |
-| `docs/pricing.md` | pricing model, versioning, currencies |
+| [`docs/capture-methods.md`](docs/capture-methods.md) | the four capture levels and per-adapter fidelity |
+| [`docs/privacy.md`](docs/privacy.md) | what is stored, where, and what leaves the machine |
+| [`docs/benchmarking.md`](docs/benchmarking.md) | running comparisons and their comparability caveats |
+| [`docs/adapter-development.md`](docs/adapter-development.md) | adding support for a new AI application |
+| [`docs/pricing.md`](docs/pricing.md) | pricing model, versioning, currencies |
 
 ## Licence
 

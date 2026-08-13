@@ -106,10 +106,14 @@ function LiveRow({ taskId, name }: { taskId: string; name: string }) {
   return (
     <Row>
       <Td>
-        <span className="flex items-center gap-1.5">
+        <button
+          type="button"
+          className="flex items-center gap-1.5 text-left hover:text-accent"
+          onClick={() => navigate('/task', { task: taskId })}
+        >
           <StatusDot status={status} />
           {name}
-        </span>
+        </button>
       </Td>
       <Td>{live?.summary?.adapter_id ?? '—'}</Td>
       <Td>

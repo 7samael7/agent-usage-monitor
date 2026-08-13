@@ -133,3 +133,14 @@ export interface IngestStatus {
   /** True until the first pass over existing history completes. */
   backfilling: boolean
 }
+
+/** One time bucket of usage, for a chart. Bucketed by the backend. */
+export interface SeriesPoint {
+  at: string
+  requests: number
+  input_fresh: number
+  cache_read: number
+  cache_write: number
+  output_total: number
+  unclassified: number
+}

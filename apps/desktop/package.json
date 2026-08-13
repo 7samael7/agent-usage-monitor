@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "package": "bun run build && cargo build --release --target aarch64-apple-darwin -p aum-sidecar && electron-builder --mac"
   },
-  "//trustedDependencies": "bun blocks lifecycle scripts by default. Without this, electron's postinstall never downloads its binary and `electron-vite dev` fails with the deeply unhelpful 'Error: Electron uninstall'. It must be declared here, in the package that depends on electron \u2014 declaring it only at the workspace root is not enough.",
+  "//trustedDependencies": "bun blocks lifecycle scripts by default. Without this, electron's postinstall never downloads its binary and `electron-vite dev` fails with the deeply unhelpful 'Error: Electron uninstall'. It must be declared here, in the package that depends on electron — declaring it only at the workspace root is not enough.",
   "trustedDependencies": ["electron", "esbuild"],
   "dependencies": {
     "@aum/api-contract": "workspace:*"
@@ -31,6 +31,7 @@
     "electron-vite": "^5.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "recharts": "^3.10.1",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
     "vite": "^8.2.1",

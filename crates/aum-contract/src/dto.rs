@@ -300,3 +300,18 @@ pub struct IngestStatus {
     /// distinguish "nothing here" from "still reading".
     pub backfilling: bool,
 }
+
+/// One time bucket of usage, for a chart.
+///
+/// Bucketed by the backend: a task can have tens of thousands of requests, and
+/// a chart needs a few hundred points.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SeriesPoint {
+    pub at: String,
+    pub requests: u32,
+    pub input_fresh: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub output_total: u64,
+    pub unclassified: u64,
+}
