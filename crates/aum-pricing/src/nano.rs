@@ -13,9 +13,15 @@ use rust_decimal::prelude::ToPrimitive as _;
 pub const NANO: i64 = 1_000_000_000;
 
 /// Stored integer to decimal. Always exact.
+///
+/// Normalised, because the scale is an artefact of storage rather than a
+/// statement about the rate. `Decimal::new(5_000_000_000, 9)` is `5.000000000`,
+/// and those nine zeros travel all the way to the screen as `$5.000000000 / in`
+/// — which reads as false precision about a figure that is simply five dollars.
+/// Normalising changes no value, only how many digits claim to be significant.
 #[must_use]
 pub fn to_decimal(nano: i64) -> Decimal {
-    Decimal::new(nano, 9)
+    Decimal::new(nano, 9).normalize()
 }
 
 /// Decimal to stored integer.
@@ -75,6 +81,16 @@ mod tests {
         // i64 nano tops out around nine billion dollars. Wrapping would turn a
         // typo into a small, plausible, entirely wrong rate.
         assert_eq!(from_decimal(d("100000000000")), None);
+    }
+
+    #[test]
+    fn a_stored_rate_does_not_come_back_claiming_nine_decimal_places() {
+        // $5.00 stored is 5_000_000_000 nano. Without normalising it returns as
+        // "5.000000000", which reaches the screen verbatim and reads as a
+        // measured-to-the-nanodollar rate rather than as five dollars.
+        assert_eq!(to_decimal(5_000_000_000).to_string(), "5");
+        assert_eq!(to_decimal(750_000_000).to_string(), "0.75");
+        assert_eq!(to_decimal(75_000_000).to_string(), "0.075");
     }
 
     #[test]

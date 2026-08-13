@@ -1,0 +1,13 @@
+-- Why a launched agent failed.
+--
+-- Until now a failed task recorded only its exit code, and the agent's own
+-- explanation — piped, read, and then dropped — never reached the screen. Both
+-- of the first two real launches failed with a one-line, entirely actionable
+-- message ("OAuth session expired and could not be refreshed"; "Not inside a
+-- trusted directory"), and the application showed a red dot and a number.
+--
+-- This holds a bounded tail of the agent's stderr, and only for a task that
+-- failed. It is diagnostics, not conversation: prompts, responses and tool
+-- traffic are still never stored, and the environment the agent was given is
+-- still never stored either, because it routinely holds API keys.
+ALTER TABLE task ADD COLUMN failure_detail TEXT;

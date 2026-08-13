@@ -23,9 +23,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aum_adapters::{LineCtx, ParseOutcome, Signal, UsageAdapter, codex::CodexAdapter};
 use aum_db::Database;
-use aum_db::repo::{self, UsageRecord};
+use aum_db::repo;
 use aum_procmon::{LaunchSpec, LaunchedProcess};
 use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::Mutex;
@@ -106,6 +105,77 @@ struct Running {
     process: LaunchedProcess,
     /// Reader of the child's stdout, for agents whose events arrive that way.
     reader: Option<tokio::task::JoinHandle<()>>,
+    /// The tail of whatever the agent wrote to stderr.
+    ///
+    /// Kept because an agent that refuses to run explains itself there, and
+    /// that explanation is the most useful thing the application can show:
+    /// "OAuth session expired and could not be refreshed" tells the user
+    /// exactly what to do, where an exit code tells them nothing.
+    stderr: Arc<Mutex<StderrTail>>,
+}
+
+/// A bounded tail of a child's stderr.
+///
+/// Bounded because an agent stuck in a loop can write without limit, and this
+/// sits in memory for the life of the task. The tail rather than the head
+/// because the last thing a failing process says is almost always the reason.
+#[derive(Default)]
+struct StderrTail {
+    lines: std::collections::VecDeque<String>,
+}
+
+impl StderrTail {
+    /// Enough to carry a stack trace, far short of enough to be a log file.
+    const MAX_LINES: usize = 20;
+    const MAX_LINE: usize = 400;
+
+    fn push(&mut self, line: String) {
+        let line = if line.len() > Self::MAX_LINE {
+            let mut truncated: String = line.chars().take(Self::MAX_LINE).collect();
+            truncated.push('…');
+            truncated
+        } else {
+            line
+        };
+        self.lines.push_back(line);
+        while self.lines.len() > Self::MAX_LINES {
+            self.lines.pop_front();
+        }
+    }
+
+    fn text(&self) -> Option<String> {
+        let joined = self
+            .lines
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let trimmed = joined.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    }
+}
+
+/// Accumulate one of a child's output streams into a bounded tail.
+///
+/// Generic over the pipe because which stream carries the explanation is the
+/// agent's choice, not ours: Claude Code puts a fatal error on stdout, Codex
+/// puts its refusals on stderr.
+async fn collect_output<R>(pipe: R, into: Arc<Mutex<StderrTail>>)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncBufReadExt as _;
+    let mut lines = tokio::io::BufReader::new(pipe).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if line.trim().is_empty() {
+            continue;
+        }
+        into.lock().await.push(line);
+    }
 }
 
 /// Owns every task the monitor started.
@@ -201,10 +271,34 @@ impl TaskManager {
             None
         };
 
-        self.running
-            .lock()
-            .await
-            .insert(task_id, Running { process, reader });
+        // Drained continuously rather than read at exit: a child whose pipe
+        // fills up blocks on the write, so an agent that is merely chatty would
+        // hang instead of running.
+        let stderr = Arc::new(Mutex::new(StderrTail::default()));
+        if let Some(pipe) = process.child.stderr.take() {
+            tokio::spawn(collect_output(pipe, Arc::clone(&stderr)));
+        }
+
+        // Claude Code reports a fatal error on **stdout**, not stderr —
+        // "Failed to authenticate: OAuth session expired and could not be
+        // refreshed" arrives there, while stderr carries only shell noise. A
+        // stderr-only capture therefore recorded a failed task with no reason
+        // at all, which is the case this whole mechanism exists for. Where
+        // nothing else is consuming stdout, it is diagnostics too.
+        if reader.is_none()
+            && let Some(pipe) = process.child.stdout.take()
+        {
+            tokio::spawn(collect_output(pipe, Arc::clone(&stderr)));
+        }
+
+        self.running.lock().await.insert(
+            task_id,
+            Running {
+                process,
+                reader,
+                stderr,
+            },
+        );
 
         tracing::info!(%task_id, agent = spec.agent.adapter_id(), "task launched");
         Ok(task_id)
@@ -246,28 +340,46 @@ impl TaskManager {
         let mut finished = Vec::new();
         {
             let mut running = self.running.lock().await;
+            let mut done = Vec::new();
             for (id, entry) in running.iter_mut() {
                 if let Ok(Some(status)) = entry.process.child.try_wait() {
-                    finished.push((*id, status.code()));
+                    done.push(*id);
+                    finished.push((*id, status.code(), Arc::clone(&entry.stderr)));
                 }
             }
-            for (id, _) in &finished {
-                running.remove(id);
+            for id in done {
+                running.remove(&id);
             }
         }
 
-        for (id, code) in finished {
+        for (id, code, stderr) in finished {
             let status = if code == Some(0) {
                 "completed"
             } else {
                 "failed"
             };
+
+            // Only for a failure. A successful agent's stderr is noise, and
+            // keeping it would turn a diagnostic into a log file.
+            let detail = if status == "failed" {
+                let text = stderr.lock().await.text();
+                if let Some(text) = &text {
+                    tracing::warn!(task_id = %id, detail = %text, "agent failed");
+                }
+                text
+            } else {
+                None
+            };
+
             let _ = sqlx::query(
-                "UPDATE task SET status = ?1, ended_at = ?2, exit_code = ?3 WHERE id = ?4",
+                "UPDATE task
+                    SET status = ?1, ended_at = ?2, exit_code = ?3, failure_detail = ?4
+                  WHERE id = ?5",
             )
             .bind(status)
             .bind(aum_db::now_sql())
             .bind(code)
+            .bind(&detail)
             .bind(id.to_string())
             .execute(self.db.writer())
             .await;
@@ -288,88 +400,98 @@ impl TaskManager {
     }
 }
 
-/// Read a launched Codex process's event stream.
+/// Learn a launched Codex run's session id from its own stdout.
 ///
-/// The same parser as the rollout files — one implementation, two transports.
-/// The session binding is written the moment the stream announces its id, which
-/// is deterministic because this is our own child's pipe.
+/// **This reads the identity and nothing else.** `codex exec --json` emits a
+/// different schema from the rollout files it writes alongside — `turn.completed`
+/// with a flat `usage` object, against the rollout's `event_msg` /
+/// `token_count` with cumulative and last-turn ledgers — so the rollout parser
+/// finds nothing here. That was the original bug: a launched Codex task
+/// completed with zero requests and no binding, because this function was
+/// written on the assumption that both transports carried the same events.
+///
+/// The fix is not to teach the parser a second usage schema. `codex exec`
+/// writes a rollout file for every run, and its `session_meta.id` is byte-for-byte
+/// the `thread_id` announced here — verified against a real run. So the stream
+/// supplies the identity, which only our own child can tell us, and the file
+/// supplies the usage, through the one parser that is already tested against a
+/// 21,603-turn corpus. Parsing usage from both would risk counting it twice for
+/// exactly the runs the monitor started.
 async fn read_codex_stdout(db: Database, task_id: uuid::Uuid, stdout: tokio::process::ChildStdout) {
-    let adapter = CodexAdapter;
-    let mut ctx = LineCtx::default();
     let mut lines = tokio::io::BufReader::new(stdout).lines();
     let mut bound = false;
 
     while let Ok(Some(line)) = lines.next_line().await {
-        if !adapter.is_candidate_line(line.as_bytes()) {
+        if bound {
             continue;
         }
-        let ParseOutcome::Signals(signals) = adapter.parse_line(&mut ctx, line.as_bytes()) else {
+        let Some(session_id) = thread_id_of(&line) else {
             continue;
         };
 
-        for signal in signals {
-            match signal {
-                Signal::SessionOpened { session_id, .. } if !bound => {
-                    match repo::bind_session(
-                        db.writer(),
-                        &session_id,
-                        &task_id.to_string(),
-                        "codex",
-                        "launched_stdout",
-                        &format!(r#"{{"session_id":"{session_id}","read_from_own_child":true}}"#),
-                    )
-                    .await
-                    {
-                        Ok(()) => bound = true,
-                        Err(e) => {
-                            // A conflict means another task already owns this
-                            // session, which should be impossible for a process
-                            // we spawned. Refuse rather than steal it.
-                            tracing::error!(
-                                %task_id, %session_id, error = %e,
-                                "could not bind a launched Codex session"
-                            );
-                        }
+        match repo::bind_session(
+            db.writer(),
+            &session_id,
+            &task_id.to_string(),
+            "codex",
+            "launched_stdout",
+            &format!(r#"{{"session_id":"{session_id}","read_from_own_child":true}}"#),
+        )
+        .await
+        {
+            Ok(()) => {
+                // Anything the run already wrote to its rollout file predates
+                // the binding, so claim it now rather than leaving the first
+                // turns of our own task in Unattributed.
+                match repo::attribute_existing(
+                    db.writer(),
+                    &session_id,
+                    &task_id.to_string(),
+                    "launched_stdout",
+                )
+                .await
+                {
+                    Ok(moved) => {
+                        tracing::info!(%task_id, %session_id, moved, "codex session bound");
                     }
+                    Err(e) => tracing::warn!(%task_id, error = %e, "could not back-attribute"),
                 }
-
-                Signal::Usage(u) => {
-                    let record = UsageRecord {
-                        adapter_id: "codex".to_owned(),
-                        session_id: u.session_id,
-                        dedup_key: u.dedup_key,
-                        model_id: u.model_id,
-                        occurred_at: u.occurred_at,
-                        measurement_source: u.measurement_source.to_owned(),
-                        request_kind: u.request_kind.to_owned(),
-                        usage: u.usage,
-                        is_sidechain: false,
-                        agent_id: None,
-                        agent_type: None,
-                        raw_json: u.raw_json,
-                    };
-                    if let Err(e) = repo::upsert_usage(db.writer(), &record).await {
-                        tracing::error!(%task_id, error = %e, "could not record usage");
-                    }
-                }
-
-                Signal::Anomaly { kind, detail } => {
-                    let _ = repo::record_anomaly(
-                        db.writer(),
-                        "codex",
-                        ctx.current_session.as_deref(),
-                        &kind,
-                        &detail,
-                    )
-                    .await;
-                }
-
-                _ => {}
+                bound = true;
+            }
+            Err(e) => {
+                // A conflict means another task already owns this session, which
+                // should be impossible for a process we spawned. Refuse rather
+                // than steal it.
+                tracing::error!(
+                    %task_id, %session_id, error = %e,
+                    "could not bind a launched Codex session"
+                );
             }
         }
     }
 
+    if !bound {
+        tracing::warn!(
+            %task_id,
+            "codex exited without announcing a thread id, so its usage stays unattributed"
+        );
+    }
     tracing::debug!(%task_id, "codex stdout stream ended");
+}
+
+/// The session id from a `thread.started` line, if this is one.
+///
+/// Deliberately narrow: this stream is a different schema from the rollout
+/// files, and the only field worth trusting from it is the identity.
+fn thread_id_of(line: &str) -> Option<String> {
+    if !line.contains("thread.started") {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    if value.get("type")?.as_str()? != "thread.started" {
+        return None;
+    }
+    Some(value.get("thread_id")?.as_str()?.to_owned())
 }
 
 #[cfg(test)]

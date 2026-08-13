@@ -6,6 +6,7 @@
  * the whole table.
  */
 
+import type { TaskSummary } from '@aum/api-contract'
 import { inputSideTotal } from '@aum/api-contract'
 import { useEffect, useState } from 'react'
 import { useConnection } from '../../backend/backend-provider'
@@ -17,7 +18,7 @@ import { navigate } from '../router'
 
 export function LiveTasks() {
   const conn = useConnection()
-  const [ids, setIds] = useState<{ id: string; name: string }[]>([])
+  const [visible, setVisible] = useState<TaskSummary[]>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -26,13 +27,15 @@ export function LiveTasks() {
 
     const load = () =>
       fetchTasks(conn, ac.signal)
-        .then((tasks) =>
-          setIds(
-            tasks
-              .filter((t) => t.status === 'running' || t.status === 'pending')
-              .map((t) => ({ id: t.id, name: t.name })),
-          ),
-        )
+        .then((tasks) => {
+          const live = tasks.filter((t) => t.status === 'running' || t.status === 'pending')
+          // A task that fails on launch used to vanish from this screen the
+          // instant it failed, which is the worst possible moment to hide it:
+          // the user pressed start and the row disappeared. The most recent
+          // failures stay, carrying the agent's own explanation.
+          const failed = tasks.filter((t) => t.status === 'failed').slice(0, 5)
+          setVisible([...live, ...failed])
+        })
         .catch((e: unknown) => {
           if (!ac.signal.aborted) setError(String(e))
         })
@@ -59,7 +62,7 @@ export function LiveTasks() {
     >
       {error && <p className="mb-4 text-neg">{error}</p>}
 
-      {ids.length === 0 ? (
+      {visible.length === 0 ? (
         <Empty>
           Nothing is running. Start a task from Benchmarks, and its usage will appear here as the
           agent works.
@@ -82,8 +85,8 @@ export function LiveTasks() {
             </>
           }
         >
-          {ids.map((t) => (
-            <LiveRow key={t.id} taskId={t.id} name={t.name} />
+          {visible.map((t) => (
+            <LiveRow key={t.id} task={t} />
           ))}
         </Table>
       )}
@@ -97,95 +100,115 @@ export function LiveTasks() {
  * This is the whole reason the live store exists outside React: an update to
  * another task does not touch this component at all.
  */
-function LiveRow({ taskId, name }: { taskId: string; name: string }) {
+function LiveRow({ task }: { task: TaskSummary }) {
+  const taskId = task.id
   const conn = useConnection()
   const live = useLiveTask(taskId)
   const metrics = live?.metrics ?? null
-  const status = metrics?.status ?? 'pending'
+  // The list is authoritative about status; the stream only carries running
+  // tasks, so a failed one has no snapshot and would otherwise read "pending".
+  const status = task.status === 'running' ? (metrics?.status ?? 'running') : task.status
 
   return (
-    <Row>
-      <Td>
-        <button
-          type="button"
-          className="flex items-center gap-1.5 text-left hover:text-accent"
-          onClick={() => navigate('/task', { task: taskId })}
-        >
-          <StatusDot status={status} />
-          {name}
-        </button>
-      </Td>
-      <Td>{live?.summary?.adapter_id ?? '—'}</Td>
-      <Td>
-        {metrics?.model_id ?? (
-          <span
-            className="text-text-mute"
-            title="No model has been observed for this task yet, so cost cannot be computed."
+    <>
+      <Row>
+        <Td>
+          <button
+            type="button"
+            className="flex items-center gap-1.5 text-left hover:text-accent"
+            onClick={() => navigate('/task', { task: taskId })}
           >
-            unknown
-          </span>
-        )}
-      </Td>
-      <Td align="right" numeric>
-        {metrics ? (
-          <>
-            {metrics.requests.is_lower_bound && '≥'}
-            {metrics.requests.succeeded}
-            {metrics.requests.failed > 0 && (
-              <span
-                className="ml-1 text-neg"
-                title="requests that failed and could not be measured"
-              >
-                +{metrics.requests.failed}
-              </span>
-            )}
-          </>
-        ) : (
-          '—'
-        )}
-      </Td>
-      <Td align="right" numeric>
-        {metrics ? inputSideTotal(metrics.bands).toLocaleString('en-US') : '—'}
-      </Td>
-      <Td align="right" numeric>
-        {metrics ? metrics.bands.output_total.toLocaleString('en-US') : '—'}
-      </Td>
-      <Td align="right">
-        {metrics ? <TokenCount measured={metrics.reasoning_tokens} showTag={false} /> : '—'}
-      </Td>
-      <Td align="right">
-        {metrics ? <TokenCount measured={metrics.total_tokens} showTag={false} /> : '—'}
-      </Td>
-      <Td align="right">
-        {metrics ? (
-          <Money
-            measured={metrics.cost.api_equivalent}
-            kind="api-equivalent"
-            // Live snapshots are pushed in USD: a broadcast has no client, so it
-            // cannot know whose currency to convert into. Relabelling the figure
-            // here would put a dollar amount under a euro sign.
-            currency="USD"
-          />
-        ) : (
-          '—'
-        )}
-      </Td>
-      <Td align="right" numeric>
-        {metrics ? formatElapsed(metrics.elapsed_ms) : '—'}
-      </Td>
-      <Td align="right">
-        {status === 'running' && conn && (
-          <Button
-            variant="danger"
-            onClick={() => {
-              void stopTask(conn, taskId)
-            }}
-          >
-            Stop
-          </Button>
-        )}
-      </Td>
-    </Row>
+            <StatusDot status={status} />
+            {task.name}
+          </button>
+        </Td>
+        <Td>{task.adapter_id}</Td>
+        <Td>
+          {metrics?.model_id ?? (
+            <span
+              className="text-text-mute"
+              title="No model has been observed for this task yet, so cost cannot be computed."
+            >
+              unknown
+            </span>
+          )}
+        </Td>
+        <Td align="right" numeric>
+          {metrics ? (
+            <>
+              {metrics.requests.is_lower_bound && '≥'}
+              {metrics.requests.succeeded}
+              {metrics.requests.failed > 0 && (
+                <span
+                  className="ml-1 text-neg"
+                  title="requests that failed and could not be measured"
+                >
+                  +{metrics.requests.failed}
+                </span>
+              )}
+            </>
+          ) : (
+            '—'
+          )}
+        </Td>
+        <Td align="right" numeric>
+          {metrics ? inputSideTotal(metrics.bands).toLocaleString('en-US') : '—'}
+        </Td>
+        <Td align="right" numeric>
+          {metrics ? metrics.bands.output_total.toLocaleString('en-US') : '—'}
+        </Td>
+        <Td align="right">
+          {metrics ? <TokenCount measured={metrics.reasoning_tokens} showTag={false} /> : '—'}
+        </Td>
+        <Td align="right">
+          {metrics ? <TokenCount measured={metrics.total_tokens} showTag={false} /> : '—'}
+        </Td>
+        <Td align="right">
+          {metrics ? (
+            <Money
+              measured={metrics.cost.api_equivalent}
+              kind="api-equivalent"
+              // Live snapshots are pushed in USD: a broadcast has no client, so it
+              // cannot know whose currency to convert into. Relabelling the figure
+              // here would put a dollar amount under a euro sign.
+              currency="USD"
+            />
+          ) : (
+            '—'
+          )}
+        </Td>
+        <Td align="right" numeric>
+          {metrics ? formatElapsed(metrics.elapsed_ms) : '—'}
+        </Td>
+        <Td align="right">
+          {status === 'running' && conn && (
+            <Button
+              variant="danger"
+              onClick={() => {
+                void stopTask(conn, taskId)
+              }}
+            >
+              Stop
+            </Button>
+          )}
+        </Td>
+      </Row>
+
+      {task.failure_detail && (
+        <tr>
+          <td colSpan={11} className="border-border border-b bg-neg/5 px-3 py-2">
+            <div className="text-[11px] text-text-mute">
+              {task.adapter_id} exited with an error and said:
+            </div>
+            {/* The agent's own words, verbatim. Paraphrasing would lose the one
+              thing that makes this actionable. */}
+            <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-neg leading-relaxed">
+              {task.failure_detail}
+            </pre>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 

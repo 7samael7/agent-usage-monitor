@@ -311,7 +311,9 @@ fn to_task_summary(row: aum_db::repo::TaskRow) -> aum_contract::TaskSummary {
 
     let binding = match (row.binding_method.as_deref(), row.session_id) {
         (Some("launched_pinned"), Some(session_id)) => TaskBinding::LaunchedPinned { session_id },
-        (Some("launched_stdout"), Some(session_id)) => TaskBinding::SessionIdExact { session_id },
+        // Read from a process we started, which is not the same claim as a user
+        // typing a session id in — and the enum says so.
+        (Some("launched_stdout"), Some(session_id)) => TaskBinding::LaunchedStdout { session_id },
         (Some("session_id_exact"), Some(session_id)) => TaskBinding::SessionIdExact { session_id },
         // No binding yet. A launched Codex task is briefly in this state, until
         // its stream announces a session id — and it is shown as unbound rather
@@ -336,6 +338,7 @@ fn to_task_summary(row: aum_db::repo::TaskRow) -> aum_contract::TaskSummary {
         binding,
         working_dir: row.working_dir,
         model_id: row.model_id,
+        failure_detail: row.failure_detail,
         started_at: row
             .started_at
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok())

@@ -47,8 +47,12 @@ pub enum TaskStatus {
 pub enum TaskBinding {
     /// We spawned the agent and pinned its session identity.
     LaunchedPinned { session_id: String },
-    /// We spawned the agent and read its event stream from our own child's stdout.
-    LaunchedStdout { pid: u32 },
+    /// We spawned the agent and read its session id from our own child's stdout.
+    ///
+    /// Carries the session id rather than the pid, because the session id is
+    /// what the binding is *made of* — a pid says which process we started, and
+    /// the question attribution answers is which session's usage belongs here.
+    LaunchedStdout { session_id: String },
     /// The user bound an already-running process, proven via the agent's own
     /// PID→session file and validated against the process start time.
     AttachedPidSessionFile { pid: u32, session_id: String },
@@ -73,6 +77,13 @@ pub struct TaskSummary {
     pub model_id: Option<String>,
     pub started_at: Option<chrono::DateTime<chrono::Utc>>,
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// What the agent said on its way out, when it failed.
+    ///
+    /// An exit code tells the user nothing they can act on. "OAuth session
+    /// expired and could not be refreshed" tells them exactly what to do, and
+    /// the agent had already written it — the application was simply throwing
+    /// it away.
+    pub failure_detail: Option<String>,
 }
 
 /// The authoritative snapshot the dashboard renders.

@@ -20,7 +20,7 @@ export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'stopp
 
 export type TaskBinding =
   | { mode: 'launched_pinned'; session_id: string }
-  | { mode: 'launched_stdout'; pid: number }
+  | { mode: 'launched_stdout'; session_id: string }
   | { mode: 'attached_pid_session_file'; pid: number; session_id: string }
   | { mode: 'session_id_exact'; session_id: string }
   | { mode: 'unbound' }
@@ -36,6 +36,8 @@ export interface TaskSummary {
   model_id: string | null
   started_at: string | null
   ended_at: string | null
+  /** What the agent said on its way out, when it failed. Null otherwise. */
+  failure_detail: string | null
 }
 
 export interface RequestCounts {

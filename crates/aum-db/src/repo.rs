@@ -1184,7 +1184,7 @@ pub async fn failed_request_count(pool: &Pool<Sqlite>, task_id: &str) -> Result<
 pub async fn list_tasks(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<TaskRow>> {
     let rows = sqlx::query(
         "SELECT t.id, t.benchmark_id, t.name, t.adapter_id, t.status, t.working_dir,
-                t.model_id, t.started_at, t.ended_at,
+                t.model_id, t.started_at, t.ended_at, t.failure_detail,
                 (SELECT session_id FROM task_binding b WHERE b.task_id = t.id LIMIT 1) AS session_id,
                 (SELECT method     FROM task_binding b WHERE b.task_id = t.id LIMIT 1) AS method
            FROM task t
@@ -1204,6 +1204,7 @@ pub async fn list_tasks(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<TaskRow>>
                 adapter_id: row.try_get("adapter_id")?,
                 status: row.try_get("status")?,
                 working_dir: row.try_get("working_dir")?,
+                failure_detail: row.try_get("failure_detail")?,
                 model_id: row.try_get("model_id")?,
                 started_at: row.try_get("started_at")?,
                 ended_at: row.try_get("ended_at")?,
@@ -1227,6 +1228,8 @@ pub struct TaskRow {
     pub ended_at: Option<String>,
     pub session_id: Option<String>,
     pub binding_method: Option<String>,
+    /// Why the agent failed, in its own words. `None` unless it failed.
+    pub failure_detail: Option<String>,
 }
 
 /// Record a request that terminally failed.
