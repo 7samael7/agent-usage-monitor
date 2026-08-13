@@ -1,40 +1,68 @@
-import type { ReactNode } from 'react'
+import { useConnection } from '../backend/backend-provider'
 import { useBackend } from '../backend/backend-provider'
+import { useEventStream } from '../backend/use-live'
+import { Dashboard } from './dashboard'
+import { ROUTES, navigate, useLocation } from './router'
+import { Applications } from './routes/applications'
+import { Benchmarks } from './routes/benchmarks'
+import { History } from './routes/history'
+import { LiveTasks } from './routes/live-tasks'
+import { Models } from './routes/models'
+import { Settings } from './routes/settings'
 
-const NAV = [
-  'Dashboard',
-  'Live Tasks',
-  'Benchmarks',
-  'History',
-  'Models & Pricing',
-  'Applications',
-  'Settings',
-] as const
-
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell() {
   const { info } = useBackend()
+  const conn = useConnection()
+  const location = useLocation()
+
+  // One stream for the whole application. Every screen reads the same store, so
+  // navigating between them does not reconnect.
+  useEventStream(conn)
 
   return (
     <div className="flex h-full flex-col bg-bg text-text">
       <TitleBar />
+
       {info.phase === 'restarting' && (
-        <Banner tone="warn">
-          The backend is restarting. Live data is paused, and the numbers below are stale.
+        <Banner>
+          The backend is restarting. Live data is paused and the numbers below are stale.
         </Banner>
       )}
       {info.phase === 'degraded' && (
-        <Banner tone="warn">
-          The backend is not responding to health checks. It may be busy; data collection is
-          continuing.
+        <Banner>
+          The backend is not answering health checks. It may be busy; collection is continuing.
         </Banner>
       )}
+
       <div className="flex min-h-0 flex-1">
-        <Sidebar />
-        <main className="min-w-0 flex-1 overflow-auto">{children}</main>
+        <Sidebar current={location.path} />
+        <main className="min-w-0 flex-1 overflow-auto">
+          <Route path={location.path} />
+        </main>
       </div>
+
       <StatusBar />
     </div>
   )
+}
+
+function Route({ path }: { path: string }) {
+  switch (path) {
+    case '/live':
+      return <LiveTasks />
+    case '/benchmarks':
+      return <Benchmarks />
+    case '/history':
+      return <History />
+    case '/models':
+      return <Models />
+    case '/applications':
+      return <Applications />
+    case '/settings':
+      return <Settings />
+    default:
+      return <Dashboard />
+  }
 }
 
 function TitleBar() {
@@ -45,25 +73,26 @@ function TitleBar() {
   )
 }
 
-function Sidebar() {
+function Sidebar({ current }: { current: string }) {
   return (
     <nav className="w-52 shrink-0 border-border border-r bg-surface p-2">
       <ul className="flex flex-col gap-0.5">
-        {NAV.map((item, i) => (
-          <li key={item}>
-            <button
-              type="button"
-              disabled={i !== 0}
-              className={
-                i === 0
-                  ? 'w-full rounded bg-surface-3 px-2.5 py-1.5 text-left text-text'
-                  : 'w-full cursor-not-allowed rounded px-2.5 py-1.5 text-left text-text-faint'
-              }
-            >
-              {item}
-            </button>
-          </li>
-        ))}
+        {ROUTES.map((route) => {
+          const active = current === route.path
+          return (
+            <li key={route.path}>
+              <button
+                type="button"
+                onClick={() => navigate(route.path)}
+                className={`no-drag w-full rounded px-2.5 py-1.5 text-left transition-colors ${
+                  active ? 'bg-surface-3 text-text' : 'text-text-dim hover:bg-surface-2'
+                }`}
+              >
+                {route.label}
+              </button>
+            </li>
+          )
+        })}
       </ul>
     </nav>
   )
@@ -85,8 +114,10 @@ function StatusBar() {
   )
 }
 
-function Banner({ tone, children }: { tone: 'warn' | 'neg'; children: ReactNode }) {
-  const cls =
-    tone === 'warn' ? 'border-warn/40 bg-warn/10 text-warn' : 'border-neg/40 bg-neg/10 text-neg'
-  return <div className={`shrink-0 border-b px-4 py-2 text-[12px] ${cls}`}>{children}</div>
+function Banner({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="shrink-0 border-warn/40 border-b bg-warn/10 px-4 py-2 text-[12px] text-warn">
+      {children}
+    </div>
+  )
 }

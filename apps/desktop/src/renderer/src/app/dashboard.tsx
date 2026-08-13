@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react'
 import { useConnection } from '../backend/backend-provider'
 import { fetchIngestStatus, fetchSessions } from '../backend/client'
 import { TokenCount } from '../viz/measurement'
+import { Screen } from '../viz/ui'
 
 export function Dashboard() {
   const conn = useConnection()
@@ -48,17 +49,11 @@ export function Dashboard() {
   }, [conn])
 
   return (
-    <div className="p-6">
-      <h1 className="mb-1 font-semibold text-[15px]">Dashboard</h1>
-      <p className="mb-6 text-text-mute">
-        Usage read from the agents' own records on this machine.
-      </p>
-
+    <Screen title="Dashboard" subtitle="Usage read from the agents' own records on this machine.">
       {error && <p className="mb-4 text-neg">{error}</p>}
-
       <IngestSummary status={status} />
       <SessionTable sessions={sessions} status={status} />
-    </div>
+    </Screen>
   )
 }
 

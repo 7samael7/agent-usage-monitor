@@ -86,3 +86,67 @@ export function TokenCount({
     </span>
   )
 }
+
+/**
+ * A monetary amount.
+ *
+ * `kind` is required and has no default. The three quantities this application
+ * deals in are genuinely different — what you would have paid on
+ * pay-as-you-go, what the agent itself reported, and what you were actually
+ * charged — and collapsing them into one column labelled "cost" would be the
+ * most consequential dishonesty available here. Requiring the prop means a
+ * currency amount cannot reach the screen without declaring which it is.
+ */
+export function Money({
+  measured,
+  kind,
+  currency,
+}: {
+  measured: Measured<string>
+  kind: 'billed' | 'provider' | 'api-equivalent'
+  currency: 'USD' | 'EUR' | 'CZK'
+}) {
+  const accuracyKind = measured.accuracy.kind
+  const style = STYLES[accuracyKind]
+
+  const label = {
+    billed: 'what you were actually charged',
+    provider: "the agent's own figure, not a charge",
+    'api-equivalent': 'what this would cost on pay-as-you-go — not a charge',
+  }[kind]
+
+  const sentence = `${label}. ${accuracySentence(measured.accuracy)}`
+
+  if (measured.value === null) {
+    return (
+      <span className={`numeric ${style.text}`} title={sentence} aria-label={sentence}>
+        —
+      </span>
+    )
+  }
+
+  // Parsed only to format. The value is a decimal string precisely so that
+  // arithmetic on it as a float never happens; this rounds for display and
+  // keeps the exact figure in the tooltip.
+  const amount = Number.parseFloat(measured.value)
+  const digits = Math.abs(amount) >= 1 ? 2 : Math.abs(amount) >= 0.001 ? 4 : 6
+  const formatted = Number.isFinite(amount)
+    ? amount.toLocaleString('en-US', {
+        style: 'currency',
+        currency,
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      })
+    : measured.value
+
+  return (
+    <span
+      className={`numeric ${style.text}`}
+      title={`${sentence} Exact value: ${measured.value}`}
+      aria-label={sentence}
+    >
+      {accuracyPrefix(accuracyKind)}
+      {formatted}
+    </span>
+  )
+}
