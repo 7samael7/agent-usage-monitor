@@ -191,13 +191,16 @@ name = "aum-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aum-adapters",
  "aum-contract",
  "aum-db",
  "aum-domain",
  "aum-engine",
  "aum-pricing",
+ "aum-procmon",
  "axum",
  "chrono",
+ "dirs",
  "futures",
  "serde",
  "serde_json",

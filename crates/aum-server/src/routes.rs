@@ -344,3 +344,60 @@ fn to_task_summary(row: aum_db::repo::TaskRow) -> aum_contract::TaskSummary {
             .map(|t| t.with_timezone(&chrono::Utc)),
     }
 }
+
+// ── Applications ────────────────────────────────────────────────────────────
+
+/// What each monitored application can actually tell us.
+///
+/// Derived by running the real parsers over the applications' own recent files,
+/// so the matrix reports what was observed rather than what was hoped.
+pub async fn adapters(
+    State(_state): State<AppState>,
+) -> Json<Vec<aum_contract::AdapterDescriptor>> {
+    use aum_adapters::{claude_code::ClaudeCodeAdapter, codex::CodexAdapter};
+
+    let home = dirs::home_dir().unwrap_or_default();
+
+    fn is_jsonl(p: &std::path::Path) -> bool {
+        p.extension().is_some_and(|e| e == "jsonl")
+    }
+    fn is_rollout(p: &std::path::Path) -> bool {
+        is_jsonl(p)
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("rollout-"))
+    }
+
+    // Probing reads files, so it runs on the blocking pool rather than stalling
+    // the async runtime.
+    let descriptors = tokio::task::spawn_blocking(move || {
+        let claude_root = home.join(".claude").join("projects");
+        let codex_root = home.join(".codex").join("sessions");
+
+        let claude = aum_engine::describe_file_adapter(
+            "claude_code",
+            "Claude Code",
+            &aum_engine::probe(&ClaudeCodeAdapter, &claude_root, &is_jsonl),
+            aum_procmon::launch::discover("claude").map(|p| p.display().to_string()),
+            claude_root.is_dir(),
+        );
+
+        let codex = aum_engine::describe_file_adapter(
+            "codex",
+            "Codex",
+            &aum_engine::probe(&CodexAdapter, &codex_root, &is_rollout),
+            aum_procmon::launch::discover("codex").map(|p| p.display().to_string()),
+            codex_root.is_dir(),
+        );
+
+        let desktop = aum_engine::describe_claude_desktop(
+            std::path::Path::new("/Applications/Claude.app").is_dir(),
+        );
+
+        vec![claude, codex, desktop]
+    })
+    .await
+    .unwrap_or_default();
+
+    Json(descriptors)
+}

@@ -5,6 +5,7 @@
 
 pub mod ingest;
 pub mod metrics;
+pub mod probe;
 pub mod scan;
 pub mod tasks;
 
@@ -19,6 +20,7 @@ use tokio::sync::RwLock;
 
 pub use ingest::{PassStats, WatchRoot, ingest_file, ingest_root};
 pub use metrics::{Completeness, MetricsInput};
+pub use probe::{describe_claude_desktop, describe_file_adapter, probe};
 pub use scan::{ScanCache, ScanResult};
 pub use tasks::{Agent, TaskError, TaskManager, TaskSpec};
 

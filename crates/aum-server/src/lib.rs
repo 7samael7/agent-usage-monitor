@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/events", get(routes::events))
         .route("/v1/ingest/status", get(routes::ingest_status))
         .route("/v1/sessions", get(routes::sessions))
+        .route("/v1/adapters", get(routes::adapters))
         .route(
             "/v1/tasks",
             get(routes::list_tasks).post(routes::create_task),
