@@ -63,7 +63,7 @@ fn totals_json(t: &Totals) -> serde_json::Value {
 
 /// Reasoning as a `Measured`, so an agent that does not report it renders as a
 /// dash rather than as zero, and a partly-reporting set renders as a floor.
-fn reasoning_of(t: &Totals) -> Measured<u64> {
+pub fn reasoning_measure(t: &Totals) -> Measured<u64> {
     use aum_contract::{MeasurementSource, UnavailableReason};
     let n = |v: i64| u64::try_from(v).unwrap_or(0);
     match t.reasoning {
@@ -153,7 +153,7 @@ pub async fn overview(
     println!(
         "  {:<14} {}",
         "reasoning",
-        fmt::render_tokens(&reasoning_of(&totals), c)
+        fmt::render_tokens(&reasoning_measure(&totals), c)
     );
     println!(
         "  {:<14} {}",
@@ -413,7 +413,7 @@ fn model_table(ctx: &Context, per_model: &[(Option<String>, Totals)], limit: usi
             model.clone().unwrap_or_else(|| "(not reported)".to_owned()),
             fmt::thousands(totals.requests),
             fmt::thousands(totals.grand_total()),
-            fmt::render_tokens(&reasoning_of(totals), c),
+            fmt::render_tokens(&reasoning_measure(totals), c),
             fmt::render_money(&cost, ctx.currency_code(), c),
             rate,
         ]);
@@ -477,7 +477,15 @@ pub async fn sessions(ctx: &Context, limit: i64, json: bool) -> anyhow::Result<(
             ),
             s.adapter_id.clone(),
             s.model_id.clone().unwrap_or_else(|| "—".to_owned()),
-            fmt::thousands(i64::from(s.requests)),
+            if s.failed > 0 {
+                format!(
+                    "{} +{} failed",
+                    fmt::thousands(i64::from(s.requests)),
+                    s.failed
+                )
+            } else {
+                fmt::thousands(i64::from(s.requests))
+            },
             fmt::render_tokens(&s.total_tokens, c),
             fmt::render_tokens(&s.reasoning_tokens, c),
         ]);
@@ -592,7 +600,7 @@ mod tests {
             reasoning_reported_by: 0,
             ..Totals::default()
         };
-        assert_eq!(reasoning_of(&t).value, None);
+        assert_eq!(reasoning_measure(&t).value, None);
     }
 
     #[test]
@@ -603,7 +611,7 @@ mod tests {
             reasoning_reported_by: 2,
             ..Totals::default()
         };
-        let m = reasoning_of(&t);
+        let m = reasoning_measure(&t);
         assert_eq!(m.value, Some(35));
         assert_eq!(
             m.accuracy.display_kind(),

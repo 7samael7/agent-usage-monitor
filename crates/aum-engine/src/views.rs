@@ -59,6 +59,7 @@ pub fn session_summary(t: aum_db::repo::SessionTotals) -> SessionSummary {
         adapter_id: t.adapter_id,
         model_id: t.model_id,
         requests,
+        failed: u32::try_from(t.failed).unwrap_or(u32::MAX),
         bands,
         total_tokens,
         reasoning_tokens,

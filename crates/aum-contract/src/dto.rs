@@ -315,6 +315,10 @@ pub struct SessionSummary {
     pub adapter_id: String,
     pub model_id: Option<String>,
     pub requests: u32,
+    /// Requests that terminally failed and produced no tokens. Reported apart
+    /// from `requests` so a session where everything failed reads as work that
+    /// went wrong rather than as a session where nothing happened.
+    pub failed: u32,
     pub bands: TokenBands,
     pub total_tokens: Measured<u64>,
     pub reasoning_tokens: Measured<u64>,

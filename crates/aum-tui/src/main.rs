@@ -14,6 +14,7 @@ mod cli;
 mod context;
 mod fmt;
 mod report;
+mod tui;
 
 use clap::Parser as _;
 use cli::{Cli, Command};
@@ -63,6 +64,10 @@ async fn run() -> anyhow::Result<()> {
     let ctx = Context::open(args.db.as_deref(), &args.currency, colour, sync).await?;
 
     match args.command {
+        // No subcommand and a real terminal means the interactive view. With
+        // `--json`, or piped somewhere, it means the overview as text — a TUI
+        // written into a pipe is escape-code soup.
+        None if !args.json && colour => tui::run(&ctx, &filter, &range.label).await,
         None | Some(Command::Overview) => {
             report::overview(&ctx, &filter, &range.label, args.json).await
         }
