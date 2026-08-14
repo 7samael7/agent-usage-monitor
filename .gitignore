@@ -3,7 +3,7 @@
 #
 # This project reads AI agent transcripts, which contain prompts, responses,
 # source code and absolute paths. Nothing derived from real transcripts may be
-# committed unless it has been through scripts/redact-fixture.ts first.
+# committed unless it has been through `cargo xtask redact` first.
 #
 # `tests/fixtures/**` is re-included below and is the ONLY place JSONL may live.
 # `cargo test fixtures_are_redacted` enforces that what lands there is scrubbed.
@@ -29,17 +29,6 @@ scratch/
 /target/
 **/*.rs.bk
 
-# ── Node / bun ───────────────────────────────────────────────────────────────
-node_modules/
-dist/
-out/
-.vite/
-*.tsbuildinfo
-
-# ── Electron build output ────────────────────────────────────────────────────
-release/
-apps/desktop/out/
-
 # ── macOS ────────────────────────────────────────────────────────────────────
 .DS_Store
 
@@ -47,5 +36,4 @@ apps/desktop/out/
 .idea/
 .vscode/
 *.swp
-out-tsc/
 .env.local

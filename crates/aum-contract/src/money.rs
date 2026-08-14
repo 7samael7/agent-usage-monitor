@@ -96,26 +96,9 @@ impl<'de> Deserialize<'de> for Money {
     }
 }
 
-impl utoipa::PartialSchema for Money {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{ObjectBuilder, Type};
-        ObjectBuilder::new()
-            .schema_type(Type::String)
-            .description(Some(
-                "An exact decimal monetary amount encoded as a string. Never a JSON \
-                 number: a double would silently lose precision when summing \
-                 sub-cent per-request costs.",
-            ))
-            .examples([serde_json::json!("0.004125")])
-            .into()
-    }
-}
-
-impl utoipa::ToSchema for Money {}
-
 /// Display currency. USD is the canonical pricing currency; EUR and CZK are
 /// presentation, produced by applying a dated exchange rate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Currency {
     Usd,

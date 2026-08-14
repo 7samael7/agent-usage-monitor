@@ -8,13 +8,13 @@ use crate::tokens::TokenBands;
 
 // ── Meta ─────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: String,
     pub uptime_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetaResponse {
     pub contract_version: String,
     pub impl_name: String,
@@ -27,7 +27,7 @@ pub struct MetaResponse {
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Pending,
@@ -42,7 +42,7 @@ pub enum TaskStatus {
 /// There is deliberately no `Heuristic` variant. If no binding can be
 /// established, usage goes to the Unattributed bucket — it is never guessed
 /// into a task.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum TaskBinding {
     /// We spawned the agent and pinned its session identity.
@@ -62,7 +62,7 @@ pub enum TaskBinding {
     Unbound,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskSummary {
     pub id: uuid::Uuid,
     pub benchmark_id: Option<uuid::Uuid>,
@@ -87,7 +87,7 @@ pub struct TaskSummary {
 }
 
 /// The authoritative snapshot the dashboard renders.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskMetrics {
     pub task_id: uuid::Uuid,
     pub status: TaskStatus,
@@ -106,7 +106,7 @@ pub struct TaskMetrics {
     pub latency: LatencySummary,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct RequestCounts {
     pub succeeded: u32,
     /// Logical requests that terminally produced no usable response.
@@ -123,7 +123,7 @@ pub struct RequestCounts {
 // ── Cost ─────────────────────────────────────────────────────────────────────
 
 /// Three genuinely different quantities, never collapsed into one column.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CostBreakdown {
     pub currency: Currency,
     /// What this usage *would* cost on pay-as-you-go, from our price table.
@@ -156,7 +156,7 @@ impl CostBreakdown {
 
 // ── Latency ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LatencySummary {
     pub average_ms: Measured<u64>,
     pub median_ms: Measured<u64>,
@@ -188,7 +188,7 @@ impl LatencySummary {
 
 // ── Adapters ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdapterState {
     /// The application is installed and we can read its usage.
@@ -200,7 +200,7 @@ pub enum AdapterState {
 }
 
 /// A capability, and the evidence for the claim.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CapabilityState {
     /// Observed in real data. `evidence` quotes what was seen.
@@ -213,7 +213,7 @@ pub enum CapabilityState {
     Unknown { reason: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdapterDescriptor {
     pub id: String,
     pub display_name: String,
@@ -240,7 +240,7 @@ pub struct AdapterDescriptor {
 }
 
 /// A per-day token count that is not attributable to anything smaller.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DailyTotal {
     /// Local calendar day, `YYYY-MM-DD`.
     pub day: String,
@@ -253,7 +253,7 @@ pub struct DailyTotal {
     pub history: Vec<DailyPoint>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DailyPoint {
     pub day: String,
     pub tokens: u64,
@@ -261,7 +261,7 @@ pub struct DailyPoint {
 
 // ── Ingest ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct IngestProgress {
     pub files_done: u32,
     pub files_total: u32,
@@ -309,7 +309,7 @@ mod tests {
 // ── Observed usage ──────────────────────────────────────────────────────────
 
 /// One agent session the monitor has read, whether or not a task claims it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionSummary {
     pub session_id: String,
     pub adapter_id: String,
@@ -326,7 +326,7 @@ pub struct SessionSummary {
 }
 
 /// What ingest has read so far.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IngestStatus {
     pub passes: u64,
     pub files_scanned: u32,
@@ -344,7 +344,7 @@ pub struct IngestStatus {
 ///
 /// Bucketed by the backend: a task can have tens of thousands of requests, and
 /// a chart needs a few hundred points.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeriesPoint {
     pub at: String,
     pub requests: u32,
@@ -361,7 +361,7 @@ pub struct SeriesPoint {
 ///
 /// Not a catalogue of everything a provider publishes: the list that matters is
 /// what ran here, because that is what needs a price.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedModel {
     pub model_id: String,
     pub adapter_id: String,
@@ -376,7 +376,7 @@ pub struct ObservedModel {
 ///
 /// Rates are amounts of money and so cross the wire as decimal strings, for the
 /// same reason costs do.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PriceRow {
     pub version_id: String,
     pub model_id: String,
@@ -393,7 +393,7 @@ pub struct PriceRow {
 }
 
 /// An exchange rate, and how much to trust it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FxRow {
     pub quote_currency: String,
     /// Units of the quote currency per 1 USD.
@@ -409,7 +409,7 @@ pub struct FxRow {
 }
 
 /// The pricing screen's whole state in one response.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PricingView {
     pub models: Vec<ObservedModel>,
     pub prices: Vec<PriceRow>,
@@ -420,7 +420,7 @@ pub struct PricingView {
 }
 
 /// A rate the user has entered.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NewPrice {
     pub model_id: String,
     pub input_per_mtok: Money,
@@ -435,7 +435,7 @@ pub struct NewPrice {
 }
 
 /// An exchange rate the user has entered.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NewFxRate {
     pub quote_currency: String,
     pub rate: Money,
@@ -453,7 +453,7 @@ pub struct NewFxRate {
 /// transcript writes includes tool execution, retry backoff and think time, so
 /// "milliseconds per 1,000 output tokens" would look like a throughput
 /// measurement while being mostly a measurement of how long a file search took.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Normalized {
     /// A full sentence naming the basis, so a column header cannot drift from
     /// what was actually divided.
@@ -466,7 +466,7 @@ pub struct Normalized {
 }
 
 /// One row of a comparison.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComparisonRow {
     pub task_id: uuid::Uuid,
     pub name: String,
@@ -477,7 +477,7 @@ pub struct ComparisonRow {
 }
 
 /// Tasks side by side, plus what makes them incomparable.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Comparison {
     pub rows: Vec<ComparisonRow>,
     /// Reasons these rows are not straightforwardly comparable, in full

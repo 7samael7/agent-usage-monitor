@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// Because the buckets are disjoint, stacking them in a chart is arithmetically
 /// valid for every provider, and `cache_read / input_side_total` is a single
 /// cache-hit-rate formula that means the same thing everywhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TokenBands {
     /// Fresh input, billed at the full input rate. Disjoint from every cache bucket.
     pub input_fresh: u64,

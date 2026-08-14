@@ -1,5 +1,0 @@
-{
-  "files": [],
-  "include": [],
-  "//": "Typechecking runs the two environment configs separately (see the typecheck script). Keeping them apart is what stops renderer code from reaching for node APIs, and main-process code from assuming a DOM."
-}

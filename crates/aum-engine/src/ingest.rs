@@ -485,38 +485,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_bound_session_attributes_to_its_task() {
-        let db = aum_db::open_in_memory().await.unwrap();
-        sqlx::query(
-            "INSERT INTO task (id,name,adapter_id,status,created_at)
-             VALUES ('t1','x','claude_code','running', ?)",
-        )
-        .bind(aum_db::now_sql())
-        .execute(db.writer())
-        .await
-        .unwrap();
-        repo::bind_session(
-            db.writer(),
-            "sess-1",
-            "t1",
-            "claude_code",
-            "launched_pinned",
-            "{}",
-        )
-        .await
-        .unwrap();
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("s.jsonl");
-        write(&path, &[assistant("req_1", "msg_1", 500)]);
-        ingest_file(&db, &ClaudeCodeAdapter, &path).await.unwrap();
-
-        let totals = repo::task_totals(db.reader(), "t1").await.unwrap();
-        assert_eq!(totals.requests, 1);
-        assert_eq!(totals.output_total, 500);
-    }
-
-    #[tokio::test]
     async fn a_malformed_line_is_recorded_as_an_anomaly() {
         let db = aum_db::open_in_memory().await.unwrap();
         let dir = tempfile::tempdir().unwrap();

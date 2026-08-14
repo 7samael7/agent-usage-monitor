@@ -202,6 +202,44 @@ pub async fn save_fx(
     })
 }
 
+/// Everything the process knows about what things cost.
+///
+/// Both halves are append-only in storage; this is the in-memory projection,
+/// rebuilt after an edit rather than mutated in place, so a half-applied change
+/// can never be observed. Held behind a lock because a price can be entered
+/// while the application is running and the next figure must use it.
+pub struct MoneyState {
+    pub table: PriceTable,
+    /// The newest rate per currency. Entered by the user — nothing here makes
+    /// an outbound request to find one.
+    pub fx: Vec<ExchangeRate>,
+}
+
+impl MoneyState {
+    /// Load both halves from storage.
+    ///
+    /// A failure to load prices is not fatal: an application that shows tokens
+    /// without costs is far more useful than one that refuses to start over a
+    /// price list.
+    pub async fn load(db: &Database) -> Self {
+        let table = load_table(db).await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not load stored prices; using the seed table");
+            PriceTable::seed()
+        });
+        let fx = load_fx(db).await.unwrap_or_default();
+        Self { table, fx }
+    }
+
+    #[must_use]
+    pub fn cost_context(&self, currency: aum_contract::Currency) -> CostContext<'_> {
+        CostContext {
+            table: &self.table,
+            fx: &self.fx,
+            currency,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

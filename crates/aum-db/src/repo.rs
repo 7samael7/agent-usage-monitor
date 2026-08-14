@@ -242,120 +242,6 @@ fn merge_max_row(existing: UsageRow, incoming: &TokenUsage) -> UsageRow {
     )
 }
 
-/// Bind a provider session to a task.
-///
-/// Fails if the session already belongs to another task — that collision is the
-/// database refusing to let two tasks share usage, and it should surface as a
-/// conflict rather than be papered over.
-pub async fn bind_session(
-    pool: &Pool<Sqlite>,
-    session_id: &str,
-    task_id: &str,
-    adapter_id: &str,
-    method: &str,
-    evidence: &str,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO task_binding (session_id, task_id, adapter_id, method, evidence, bound_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )
-    .bind(session_id)
-    .bind(task_id)
-    .bind(adapter_id)
-    .bind(method)
-    .bind(evidence)
-    .bind(now_sql())
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// Retro-attribute requests already recorded for a session.
-///
-/// Used when a task binds to a session that was observed before monitoring
-/// began. Returns how many rows moved out of the unattributed bucket.
-pub async fn attribute_existing(
-    pool: &Pool<Sqlite>,
-    session_id: &str,
-    task_id: &str,
-    method: &str,
-) -> Result<u64> {
-    let result = sqlx::query(
-        "UPDATE ai_request SET task_id = ?1, attribution_method = ?2
-          WHERE session_id = ?3 AND task_id IS NULL",
-    )
-    .bind(task_id)
-    .bind(method)
-    .bind(session_id)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected())
-}
-
-/// Aggregate token counts for a task, per model.
-///
-/// One index scan, no joins: this runs once a second per running task.
-#[derive(Debug, Clone, Default)]
-pub struct TaskTotals {
-    pub requests: i64,
-    pub input_fresh: i64,
-    pub cache_read: i64,
-    pub cache_write_5m: i64,
-    pub cache_write_1h: i64,
-    pub cache_write_unspecified: i64,
-    pub output_total: i64,
-    /// Tokens counted by the provider but not attributable to input or output,
-    /// and therefore not priceable.
-    pub unclassified: i64,
-    /// `None` when no contributing request reported reasoning at all.
-    pub reasoning: Option<i64>,
-    /// How many requests reported reasoning, for the partial-aggregate rule.
-    pub reasoning_reported_by: i64,
-    pub first_at: Option<String>,
-    pub last_at: Option<String>,
-}
-
-pub async fn task_totals(pool: &Pool<Sqlite>, task_id: &str) -> Result<TaskTotals> {
-    let row = sqlx::query(
-        "SELECT COUNT(*)                          AS requests,
-                COALESCE(SUM(input_fresh), 0)     AS input_fresh,
-                COALESCE(SUM(cache_read), 0)      AS cache_read,
-                COALESCE(SUM(cache_write_5m), 0)  AS cache_write_5m,
-                COALESCE(SUM(cache_write_1h), 0)  AS cache_write_1h,
-                COALESCE(SUM(cache_write_unspecified), 0) AS cache_write_unspecified,
-                COALESCE(SUM(output_total), 0)    AS output_total,
-                COALESCE(SUM(unclassified), 0)    AS unclassified,
-                SUM(reasoning)                    AS reasoning,
-                COUNT(reasoning)                  AS reasoning_reported_by,
-                MIN(occurred_at)                  AS first_at,
-                MAX(occurred_at)                  AS last_at
-           FROM ai_request
-          -- Failed requests are counted separately. Including them here would
-          -- report the same request as both succeeded and failed.
-          WHERE task_id = ?1 AND request_kind != 'failed'",
-    )
-    .bind(task_id)
-    .fetch_one(pool)
-    .await?;
-
-    Ok(TaskTotals {
-        requests: row.try_get("requests")?,
-        input_fresh: row.try_get("input_fresh")?,
-        cache_read: row.try_get("cache_read")?,
-        cache_write_5m: row.try_get("cache_write_5m")?,
-        cache_write_1h: row.try_get("cache_write_1h")?,
-        cache_write_unspecified: row.try_get("cache_write_unspecified")?,
-        output_total: row.try_get("output_total")?,
-        unclassified: row.try_get("unclassified")?,
-        // SUM over all-NULL yields NULL, which is exactly right: no contributor
-        // reported reasoning, so the total is unknown rather than zero.
-        reasoning: row.try_get("reasoning")?,
-        reasoning_reported_by: row.try_get("reasoning_reported_by")?,
-        first_at: row.try_get("first_at")?,
-        last_at: row.try_get("last_at")?,
-    })
-}
-
 /// Usage observed but claimed by no task.
 pub async fn unattributed_count(pool: &Pool<Sqlite>) -> Result<i64> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM ai_request WHERE task_id IS NULL")
@@ -443,9 +329,6 @@ mod tests {
                 .unwrap();
         }
 
-        let totals = task_totals(db.reader(), "no-task").await.unwrap();
-        assert_eq!(totals.requests, 0, "unbound session must not attribute");
-
         let (rows, output): (i64, i64) =
             sqlx::query_as("SELECT COUNT(*), COALESCE(SUM(output_total),0) FROM ai_request")
                 .fetch_one(db.reader())
@@ -499,137 +382,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_bound_session_attributes_to_exactly_that_task() {
+    async fn a_mixed_session_reports_reasoning_as_a_floor_over_the_requests_that_have_it() {
+        // Two shapes in one session: Claude reports no reasoning count at all,
+        // Codex reports one. The aggregate must carry both the sum and how many
+        // requests contributed it, because 35 across two requests is a floor —
+        // rendering it plain would claim it was the whole story.
         let db = db().await;
-        sqlx::query(
-            "INSERT INTO task (id, name, adapter_id, status, created_at)
-             VALUES ('t1','x','claude_code','running', ?)",
-        )
-        .bind(now_sql())
-        .execute(db.writer())
-        .await
-        .unwrap();
-
-        bind_session(
-            db.writer(),
-            "sess-1",
-            "t1",
-            "claude_code",
-            "launched_pinned",
-            "{}",
-        )
-        .await
-        .unwrap();
-
-        upsert_usage(db.writer(), &record("k", claude_usage(500)))
-            .await
-            .unwrap();
-
-        let totals = task_totals(db.reader(), "t1").await.unwrap();
-        assert_eq!(totals.requests, 1);
-        assert_eq!(totals.output_total, 500);
-        assert_eq!(unattributed_count(db.reader()).await.unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn two_tasks_never_see_each_others_usage() {
-        // Twenty concurrent tasks in miniature. Set equality per task, not
-        // totals: two symmetric cross-attributions would cancel in a sum.
-        let db = db().await;
-        for (task, session) in [("t1", "s1"), ("t2", "s2")] {
-            sqlx::query(
-                "INSERT INTO task (id, name, adapter_id, status, created_at)
-                 VALUES (?, 'x', 'claude_code', 'running', ?)",
-            )
-            .bind(task)
-            .bind(now_sql())
-            .execute(db.writer())
-            .await
-            .unwrap();
-            bind_session(
-                db.writer(),
-                session,
-                task,
-                "claude_code",
-                "launched_pinned",
-                "{}",
-            )
-            .await
-            .unwrap();
-        }
-
-        for (session, dedup, out) in [("s1", "a", 100), ("s2", "b", 700), ("s1", "c", 200)] {
-            let mut rec = record(dedup, claude_usage(out));
-            rec.session_id = session.into();
-            upsert_usage(db.writer(), &rec).await.unwrap();
-        }
-
-        assert_eq!(task_totals(db.reader(), "t1").await.unwrap().requests, 2);
-        assert_eq!(
-            task_totals(db.reader(), "t1").await.unwrap().output_total,
-            300
-        );
-        assert_eq!(task_totals(db.reader(), "t2").await.unwrap().requests, 1);
-        assert_eq!(
-            task_totals(db.reader(), "t2").await.unwrap().output_total,
-            700
-        );
-    }
-
-    #[tokio::test]
-    async fn a_task_of_only_claude_requests_reports_reasoning_as_unknown() {
-        // Not zero. Claude Code reports no reasoning count, and SUM over all
-        // NULLs must stay NULL all the way to the UI.
-        let db = db().await;
-        sqlx::query(
-            "INSERT INTO task (id,name,adapter_id,status,created_at)
-             VALUES ('t1','x','claude_code','running', ?)",
-        )
-        .bind(now_sql())
-        .execute(db.writer())
-        .await
-        .unwrap();
-        bind_session(
-            db.writer(),
-            "sess-1",
-            "t1",
-            "claude_code",
-            "launched_pinned",
-            "{}",
-        )
-        .await
-        .unwrap();
-
-        upsert_usage(db.writer(), &record("a", claude_usage(10)))
-            .await
-            .unwrap();
-
-        let totals = task_totals(db.reader(), "t1").await.unwrap();
-        assert_eq!(totals.reasoning, None);
-        assert_eq!(totals.reasoning_reported_by, 0);
-    }
-
-    #[tokio::test]
-    async fn a_mixed_task_reports_reasoning_as_a_floor_over_the_requests_that_have_it() {
-        let db = db().await;
-        sqlx::query(
-            "INSERT INTO task (id,name,adapter_id,status,created_at)
-             VALUES ('t1','x','mixed','running', ?)",
-        )
-        .bind(now_sql())
-        .execute(db.writer())
-        .await
-        .unwrap();
-        bind_session(
-            db.writer(),
-            "sess-1",
-            "t1",
-            "claude_code",
-            "launched_pinned",
-            "{}",
-        )
-        .await
-        .unwrap();
 
         upsert_usage(db.writer(), &record("claude", claude_usage(100)))
             .await
@@ -649,48 +407,11 @@ mod tests {
             .await
             .unwrap();
 
-        let totals = task_totals(db.reader(), "t1").await.unwrap();
-        assert_eq!(totals.reasoning, Some(35));
-        // 1 of 2 requests reported it, so the aggregate is partial, not exact.
-        assert_eq!(totals.reasoning_reported_by, 1);
-        assert_eq!(totals.requests, 2);
-    }
-
-    #[tokio::test]
-    async fn attaching_to_an_existing_session_can_claim_its_earlier_requests() {
-        let db = db().await;
-        upsert_usage(db.writer(), &record("a", claude_usage(100)))
-            .await
-            .unwrap();
-        upsert_usage(db.writer(), &record("b", claude_usage(200)))
-            .await
-            .unwrap();
-        assert_eq!(unattributed_count(db.reader()).await.unwrap(), 2);
-
-        sqlx::query(
-            "INSERT INTO task (id,name,adapter_id,status,created_at)
-             VALUES ('t1','x','claude_code','running', ?)",
-        )
-        .bind(now_sql())
-        .execute(db.writer())
-        .await
-        .unwrap();
-        bind_session(
-            db.writer(),
-            "sess-1",
-            "t1",
-            "claude_code",
-            "session_id_exact",
-            "{}",
-        )
-        .await
-        .unwrap();
-
-        let moved = attribute_existing(db.writer(), "sess-1", "t1", "session_id_exact")
-            .await
-            .unwrap();
-        assert_eq!(moved, 2);
-        assert_eq!(unattributed_count(db.reader()).await.unwrap(), 0);
+        let sessions = recent_sessions(db.reader(), 10).await.unwrap();
+        let s = sessions.first().expect("one session");
+        assert_eq!(s.reasoning, Some(35));
+        assert_eq!(s.reasoning_reported_by, 1);
+        assert_eq!(s.requests, 2);
     }
 
     #[tokio::test]
@@ -942,6 +663,11 @@ pub struct SessionTotals {
     pub unclassified: i64,
     pub reasoning: Option<i64>,
     pub reasoning_reported_by: i64,
+    /// Requests that terminally produced no usable response. Counted apart from
+    /// `requests`, never inside it: a failed call has no tokens, so folding it
+    /// in would overstate the successes and make the two numbers contradict
+    /// each other.
+    pub failed: i64,
     pub first_at: Option<String>,
     pub last_at: Option<String>,
     /// No task has claimed this session.
@@ -957,7 +683,8 @@ pub async fn recent_sessions(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<Sess
         "SELECT session_id,
                 adapter_id,
                 MAX(model_id)                     AS model_id,
-                COUNT(*)                          AS requests,
+                COUNT(*) FILTER (WHERE request_kind != 'failed') AS requests,
+                COUNT(*) FILTER (WHERE request_kind =  'failed') AS failed,
                 COALESCE(SUM(input_fresh), 0)     AS input_fresh,
                 COALESCE(SUM(cache_read), 0)      AS cache_read,
                 COALESCE(SUM(cache_write_5m), 0)  AS cache_write_5m,
@@ -966,7 +693,8 @@ pub async fn recent_sessions(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<Sess
                 COALESCE(SUM(output_total), 0)    AS output_total,
                 COALESCE(SUM(unclassified), 0)    AS unclassified,
                 SUM(reasoning)                    AS reasoning,
-                COUNT(reasoning)                  AS reasoning_reported_by,
+                COUNT(reasoning) FILTER (WHERE request_kind != 'failed')
+                                                  AS reasoning_reported_by,
                 MIN(occurred_at)                  AS first_at,
                 MAX(occurred_at)                  AS last_at,
                 -- A session is unattributed only if no row in it is claimed.
@@ -987,6 +715,7 @@ pub async fn recent_sessions(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<Sess
                 adapter_id: row.try_get("adapter_id")?,
                 model_id: row.try_get("model_id")?,
                 requests: row.try_get("requests")?,
+                failed: row.try_get("failed")?,
                 input_fresh: row.try_get("input_fresh")?,
                 cache_read: row.try_get("cache_read")?,
                 cache_write_5m: row.try_get("cache_write_5m")?,
@@ -1002,6 +731,51 @@ pub async fn recent_sessions(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<Sess
             })
         })
         .collect()
+}
+
+/// Record a request that terminally failed.
+///
+/// Stored as a row with **no token columns set and `reasoning` NULL**, rather
+/// than as zeros. The provider reports no usage for a failed request and we
+/// cannot assert that none was consumed, so the honest state is "a request
+/// happened and we could not measure it" — which is exactly what makes any
+/// total containing it stop calling itself exact.
+pub async fn record_failure(
+    pool: &Pool<Sqlite>,
+    adapter_id: &str,
+    session_id: &str,
+    dedup_key: &str,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+    detail: &str,
+) -> Result<bool> {
+    let binding: Option<(String, String)> =
+        sqlx::query_as("SELECT task_id, method FROM task_binding WHERE session_id = ?1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+
+    let result = sqlx::query(
+        "INSERT INTO ai_request
+           (id, adapter_id, session_id, task_id, dedup_key, occurred_at,
+            measurement_source, request_kind, attribution_method, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'unknown', 'failed', ?7, ?8)
+         ON CONFLICT(adapter_id, session_id, dedup_key) DO NOTHING",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(adapter_id)
+    .bind(session_id)
+    .bind(binding.as_ref().map(|b| b.0.clone()))
+    .bind(dedup_key)
+    .bind(to_sql_time(occurred_at))
+    .bind(binding.as_ref().map(|b| b.1.clone()))
+    .bind(now_sql())
+    .execute(pool)
+    .await?;
+
+    if result.rows_affected() > 0 {
+        record_anomaly(pool, adapter_id, Some(session_id), "request_failed", detail).await?;
+    }
+    Ok(result.rows_affected() > 0)
 }
 
 #[cfg(test)]
@@ -1051,236 +825,6 @@ mod session_tests {
         let sessions = recent_sessions(db.reader(), 10).await.unwrap();
         assert!(sessions.first().unwrap().unattributed);
     }
-
-    #[tokio::test]
-    async fn a_session_claimed_by_a_task_is_not_unattributed() {
-        let db = crate::open_in_memory().await.unwrap();
-        sqlx::query(
-            "INSERT INTO task (id,name,adapter_id,status,created_at)
-             VALUES ('t1','x','claude_code','running', ?)",
-        )
-        .bind(now_sql())
-        .execute(db.writer())
-        .await
-        .unwrap();
-        bind_session(
-            db.writer(),
-            "s1",
-            "t1",
-            "claude_code",
-            "launched_pinned",
-            "{}",
-        )
-        .await
-        .unwrap();
-
-        // Through the real path: attribution is resolved at insert time, from
-        // the binding, by a single equality lookup.
-        upsert_usage(
-            db.writer(),
-            &UsageRecord {
-                adapter_id: "claude_code".into(),
-                session_id: "s1".into(),
-                dedup_key: "k1".into(),
-                model_id: Some("claude-opus-5".into()),
-                occurred_at: chrono::Utc::now(),
-                measurement_source: "provider_exact".into(),
-                request_kind: "turn".into(),
-                usage: aum_domain::TokenUsage::default(),
-                is_sidechain: false,
-                agent_id: None,
-                agent_type: None,
-                raw_json: None,
-            },
-        )
-        .await
-        .unwrap();
-
-        let sessions = recent_sessions(db.reader(), 10).await.unwrap();
-        assert!(!sessions.first().unwrap().unattributed);
-    }
-}
-
-/// Per-model totals for a task, which is what costing needs.
-///
-/// Cost cannot be computed from a task's grand total: a task may span models
-/// with rates that differ by an order of magnitude, so the arithmetic has to
-/// happen per model and be summed.
-pub async fn task_totals_by_model(
-    pool: &Pool<Sqlite>,
-    task_id: &str,
-) -> Result<Vec<(Option<String>, TaskTotals)>> {
-    let rows = sqlx::query(
-        "SELECT model_id,
-                COUNT(*)                          AS requests,
-                COALESCE(SUM(input_fresh), 0)     AS input_fresh,
-                COALESCE(SUM(cache_read), 0)      AS cache_read,
-                COALESCE(SUM(cache_write_5m), 0)  AS cache_write_5m,
-                COALESCE(SUM(cache_write_1h), 0)  AS cache_write_1h,
-                COALESCE(SUM(cache_write_unspecified), 0) AS cache_write_unspecified,
-                COALESCE(SUM(output_total), 0)    AS output_total,
-                COALESCE(SUM(unclassified), 0)    AS unclassified,
-                SUM(reasoning)                    AS reasoning,
-                COUNT(reasoning)                  AS reasoning_reported_by
-           FROM ai_request
-          WHERE task_id = ?1 AND request_kind != 'failed'
-          GROUP BY model_id",
-    )
-    .bind(task_id)
-    .fetch_all(pool)
-    .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            let model: Option<String> = row.try_get("model_id")?;
-            Ok((
-                model,
-                TaskTotals {
-                    requests: row.try_get("requests")?,
-                    input_fresh: row.try_get("input_fresh")?,
-                    cache_read: row.try_get("cache_read")?,
-                    cache_write_5m: row.try_get("cache_write_5m")?,
-                    cache_write_1h: row.try_get("cache_write_1h")?,
-                    cache_write_unspecified: row.try_get("cache_write_unspecified")?,
-                    output_total: row.try_get("output_total")?,
-                    unclassified: row.try_get("unclassified")?,
-                    reasoning: row.try_get("reasoning")?,
-                    reasoning_reported_by: row.try_get("reasoning_reported_by")?,
-                    first_at: None,
-                    last_at: None,
-                },
-            ))
-        })
-        .collect()
-}
-
-/// Anomalies recorded against any session this task owns.
-///
-/// An anomaly means the observation is incomplete, which is enough on its own
-/// to stop a total calling itself exact.
-pub async fn anomaly_count_for_task(pool: &Pool<Sqlite>, task_id: &str) -> Result<i64> {
-    let (n,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM ingest_anomaly
-          WHERE session_id IN (SELECT session_id FROM task_binding WHERE task_id = ?1)",
-    )
-    .bind(task_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(n)
-}
-
-/// Requests recorded for this task that produced no usable measurement.
-pub async fn failed_request_count(pool: &Pool<Sqlite>, task_id: &str) -> Result<i64> {
-    let (n,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM ai_request WHERE task_id = ?1 AND request_kind = 'failed'",
-    )
-    .bind(task_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(n)
-}
-
-/// Tasks, most recent first.
-pub async fn list_tasks(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<TaskRow>> {
-    let rows = sqlx::query(
-        "SELECT t.id, t.benchmark_id, t.name, t.adapter_id, t.status, t.working_dir,
-                t.model_id, t.started_at, t.ended_at, t.failure_detail,
-                (SELECT session_id FROM task_binding b WHERE b.task_id = t.id LIMIT 1) AS session_id,
-                (SELECT method     FROM task_binding b WHERE b.task_id = t.id LIMIT 1) AS method
-           FROM task t
-          ORDER BY t.created_at DESC
-          LIMIT ?1",
-    )
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            Ok(TaskRow {
-                id: row.try_get("id")?,
-                benchmark_id: row.try_get("benchmark_id")?,
-                name: row.try_get("name")?,
-                adapter_id: row.try_get("adapter_id")?,
-                status: row.try_get("status")?,
-                working_dir: row.try_get("working_dir")?,
-                failure_detail: row.try_get("failure_detail")?,
-                model_id: row.try_get("model_id")?,
-                started_at: row.try_get("started_at")?,
-                ended_at: row.try_get("ended_at")?,
-                session_id: row.try_get("session_id")?,
-                binding_method: row.try_get("method")?,
-            })
-        })
-        .collect()
-}
-
-#[derive(Debug, Clone)]
-pub struct TaskRow {
-    pub id: String,
-    pub benchmark_id: Option<String>,
-    pub name: String,
-    pub adapter_id: String,
-    pub status: String,
-    pub working_dir: Option<String>,
-    pub model_id: Option<String>,
-    pub started_at: Option<String>,
-    pub ended_at: Option<String>,
-    pub session_id: Option<String>,
-    pub binding_method: Option<String>,
-    /// Why the agent failed, in its own words. `None` unless it failed.
-    pub failure_detail: Option<String>,
-}
-
-/// Record a request that terminally failed.
-///
-/// Stored as a row with **no token columns set and `reasoning` NULL**, rather
-/// than as zeros. The provider reports no usage for a failed request and we
-/// cannot assert that none was consumed, so the honest state is "a request
-/// happened and we could not measure it" — which is exactly what makes any
-/// total containing it stop calling itself exact.
-pub async fn record_failure(
-    pool: &Pool<Sqlite>,
-    adapter_id: &str,
-    session_id: &str,
-    dedup_key: &str,
-    occurred_at: chrono::DateTime<chrono::Utc>,
-    detail: &str,
-) -> Result<bool> {
-    let binding: Option<(String, String)> =
-        sqlx::query_as("SELECT task_id, method FROM task_binding WHERE session_id = ?1")
-            .bind(session_id)
-            .fetch_optional(pool)
-            .await?;
-
-    let result = sqlx::query(
-        "INSERT INTO ai_request
-           (id, adapter_id, session_id, task_id, dedup_key, occurred_at,
-            measurement_source, request_kind, attribution_method, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'unknown', 'failed', ?7, ?8)
-         ON CONFLICT(adapter_id, session_id, dedup_key) DO NOTHING",
-    )
-    .bind(uuid::Uuid::new_v4().to_string())
-    .bind(adapter_id)
-    .bind(session_id)
-    .bind(binding.as_ref().map(|b| b.0.clone()))
-    .bind(dedup_key)
-    .bind(to_sql_time(occurred_at))
-    .bind(binding.as_ref().map(|b| b.1.clone()))
-    .bind(now_sql())
-    .execute(pool)
-    .await?;
-
-    if result.rows_affected() > 0 {
-        record_anomaly(pool, adapter_id, Some(session_id), "request_failed", detail).await?;
-    }
-    Ok(result.rows_affected() > 0)
-}
-
-#[cfg(test)]
-mod failure_tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use super::*;
 
     #[tokio::test]
     async fn a_failed_request_is_recorded_with_no_tokens_rather_than_zeros() {
@@ -1334,74 +878,11 @@ mod failure_tests {
     }
 
     #[tokio::test]
-    async fn a_failure_makes_its_task_stop_being_exact() {
-        // The property that matters: a task containing an unmeasured request
-        // must not present its total as exact.
-        let db = crate::open_in_memory().await.unwrap();
-        sqlx::query(
-            "INSERT INTO task (id,name,adapter_id,status,created_at)
-             VALUES ('t1','x','claude_code','running', ?)",
-        )
-        .bind(now_sql())
-        .execute(db.writer())
-        .await
-        .unwrap();
-        bind_session(
-            db.writer(),
-            "s1",
-            "t1",
-            "claude_code",
-            "launched_pinned",
-            "{}",
-        )
-        .await
-        .unwrap();
-
-        record_failure(
-            db.writer(),
-            "claude_code",
-            "s1",
-            "k",
-            chrono::Utc::now(),
-            "boom",
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(failed_request_count(db.reader(), "t1").await.unwrap(), 1);
-        assert!(anomaly_count_for_task(db.reader(), "t1").await.unwrap() >= 1);
-    }
-}
-
-#[cfg(test)]
-mod failure_accounting_tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use super::*;
-
-    #[tokio::test]
     async fn a_failed_request_is_not_also_counted_as_a_successful_one() {
         // It happened, and it could not be measured. Counting it in both
         // columns would overstate the successes and make the two numbers
         // contradict each other.
         let db = crate::open_in_memory().await.unwrap();
-        sqlx::query(
-            "INSERT INTO task (id,name,adapter_id,status,created_at)
-             VALUES ('t1','x','claude_code','running', ?)",
-        )
-        .bind(now_sql())
-        .execute(db.writer())
-        .await
-        .unwrap();
-        bind_session(
-            db.writer(),
-            "s1",
-            "t1",
-            "claude_code",
-            "launched_pinned",
-            "{}",
-        )
-        .await
-        .unwrap();
 
         upsert_usage(
             db.writer(),
@@ -1434,181 +915,12 @@ mod failure_accounting_tests {
         .await
         .unwrap();
 
+        let sessions = recent_sessions(db.reader(), 10).await.unwrap();
+        let s = sessions.first().expect("one session");
         assert_eq!(
-            task_totals(db.reader(), "t1").await.unwrap().requests,
-            1,
+            s.requests, 1,
             "only the successful request counts as succeeded"
         );
-        assert_eq!(failed_request_count(db.reader(), "t1").await.unwrap(), 1);
+        assert_eq!(s.failed, 1, "and the failure is reported, not hidden");
     }
-}
-
-/// A time bucket of usage for a task.
-#[derive(Debug, Clone, Default)]
-pub struct Bucket {
-    /// Bucket start, ISO-8601.
-    pub at: String,
-    pub requests: i64,
-    pub input_fresh: i64,
-    pub cache_read: i64,
-    pub cache_write: i64,
-    pub output_total: i64,
-    pub unclassified: i64,
-}
-
-/// Usage over time, bucketed in the database rather than the browser.
-///
-/// A chart needs a few hundred points; a task can have tens of thousands of
-/// requests. Sending them all and reducing client-side would move megabytes to
-/// draw a line, so the grouping happens here.
-pub async fn task_series(
-    pool: &Pool<Sqlite>,
-    task_id: &str,
-    bucket_seconds: i64,
-) -> Result<Vec<Bucket>> {
-    let seconds = bucket_seconds.max(1);
-    let rows = sqlx::query(
-        // strftime('%s') on the stored ISO-8601 text gives an epoch second;
-        // integer division floors it into a bucket.
-        "SELECT strftime('%Y-%m-%dT%H:%M:%SZ',
-                    (CAST(strftime('%s', occurred_at) AS INTEGER) / ?2) * ?2,
-                    'unixepoch')                  AS at,
-                COUNT(*)                          AS requests,
-                COALESCE(SUM(input_fresh), 0)     AS input_fresh,
-                COALESCE(SUM(cache_read), 0)      AS cache_read,
-                COALESCE(SUM(cache_write_5m + cache_write_1h + cache_write_unspecified), 0)
-                                                  AS cache_write,
-                COALESCE(SUM(output_total), 0)    AS output_total,
-                COALESCE(SUM(unclassified), 0)    AS unclassified
-           FROM ai_request
-          WHERE task_id = ?1 AND request_kind != 'failed'
-          GROUP BY at
-          ORDER BY at",
-    )
-    .bind(task_id)
-    .bind(seconds)
-    .fetch_all(pool)
-    .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            Ok(Bucket {
-                at: row.try_get("at")?,
-                requests: row.try_get("requests")?,
-                input_fresh: row.try_get("input_fresh")?,
-                cache_read: row.try_get("cache_read")?,
-                cache_write: row.try_get("cache_write")?,
-                output_total: row.try_get("output_total")?,
-                unclassified: row.try_get("unclassified")?,
-            })
-        })
-        .collect()
-}
-
-/// Every request for a task, for export.
-pub async fn task_requests(pool: &Pool<Sqlite>, task_id: &str) -> Result<Vec<RequestRow>> {
-    let rows = sqlx::query(
-        "SELECT id, adapter_id, session_id, model_id, occurred_at, measurement_source,
-                request_kind, input_fresh, cache_read,
-                cache_write_5m, cache_write_1h, cache_write_unspecified,
-                output_total, reasoning, unclassified, is_sidechain, agent_type
-           FROM ai_request WHERE task_id = ?1 ORDER BY occurred_at",
-    )
-    .bind(task_id)
-    .fetch_all(pool)
-    .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            Ok(RequestRow {
-                id: row.try_get("id")?,
-                adapter_id: row.try_get("adapter_id")?,
-                session_id: row.try_get("session_id")?,
-                model_id: row.try_get("model_id")?,
-                occurred_at: row.try_get("occurred_at")?,
-                measurement_source: row.try_get("measurement_source")?,
-                request_kind: row.try_get("request_kind")?,
-                input_fresh: row.try_get("input_fresh")?,
-                cache_read: row.try_get("cache_read")?,
-                cache_write_5m: row.try_get("cache_write_5m")?,
-                cache_write_1h: row.try_get("cache_write_1h")?,
-                cache_write_unspecified: row.try_get("cache_write_unspecified")?,
-                output_total: row.try_get("output_total")?,
-                reasoning: row.try_get("reasoning")?,
-                unclassified: row.try_get("unclassified")?,
-                is_sidechain: row.try_get::<i64, _>("is_sidechain")? == 1,
-                agent_type: row.try_get("agent_type")?,
-            })
-        })
-        .collect()
-}
-
-/// One request, as exported.
-///
-/// Deliberately contains no prompt or response text: content capture is off by
-/// default, so there is none to export, and an export must not become the one
-/// path by which conversation data leaves the machine.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct RequestRow {
-    pub id: String,
-    pub adapter_id: String,
-    pub session_id: String,
-    pub model_id: Option<String>,
-    pub occurred_at: String,
-    pub measurement_source: String,
-    pub request_kind: String,
-    pub input_fresh: i64,
-    pub cache_read: i64,
-    pub cache_write_5m: i64,
-    pub cache_write_1h: i64,
-    pub cache_write_unspecified: i64,
-    pub output_total: i64,
-    /// `null` where the provider does not report reasoning. Never 0.
-    pub reasoning: Option<i64>,
-    pub unclassified: i64,
-    pub is_sidechain: bool,
-    pub agent_type: Option<String>,
-}
-
-/// One model, as this machine has actually used it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObservedModelRow {
-    pub model_id: String,
-    pub adapter_id: String,
-    pub requests: i64,
-    pub total_tokens: i64,
-}
-
-/// Every model that appears in recorded usage, busiest first.
-///
-/// This is the list the pricing screen needs. A catalogue of everything a
-/// provider publishes would be longer and less useful: the models that need a
-/// price are the ones that ran here, and on this machine every one of them is
-/// newer than any published price list.
-pub async fn observed_models(pool: &Pool<Sqlite>) -> Result<Vec<ObservedModelRow>> {
-    let rows = sqlx::query(
-        "SELECT model_id,
-                MIN(adapter_id) AS adapter_id,
-                COUNT(*)        AS requests,
-                COALESCE(SUM(input_fresh + cache_read + cache_write_5m + cache_write_1h
-                             + cache_write_unspecified + output_total + unclassified), 0)
-                                AS total_tokens
-           FROM ai_request
-          WHERE model_id IS NOT NULL AND request_kind != 'failed'
-          GROUP BY model_id
-          ORDER BY requests DESC",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            Ok(ObservedModelRow {
-                model_id: row.try_get("model_id")?,
-                adapter_id: row.try_get("adapter_id")?,
-                requests: row.try_get("requests")?,
-                total_tokens: row.try_get("total_tokens")?,
-            })
-        })
-        .collect()
 }

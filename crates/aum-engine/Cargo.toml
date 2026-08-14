@@ -15,7 +15,6 @@ aum-domain.workspace = true
 aum-db.workspace = true
 aum-ingest.workspace = true
 aum-adapters.workspace = true
-aum-procmon.workspace = true
 aum-pricing.workspace = true
 rust_decimal.workspace = true
 sqlx.workspace = true

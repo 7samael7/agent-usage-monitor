@@ -17,7 +17,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Who authored a measurement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeasurementSource {
     /// The provider's own serving/billing infrastructure produced this number and
@@ -49,7 +49,7 @@ impl MeasurementSource {
 
 /// The four words the UI is allowed to use about a number's certainty, plus
 /// `Partial` for aggregates that are missing some of their inputs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayKind {
     Exact,
@@ -62,7 +62,7 @@ pub enum DisplayKind {
 
 /// Why a measurement could not be produced. Surfaced to the user verbatim —
 /// "unavailable" without a reason is not much better than a wrong number.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UnavailableReason {
     /// The application exposes no usage data at all (e.g. Claude Desktop).
@@ -108,7 +108,7 @@ impl UnavailableReason {
 ///
 /// `Unavailable` is the only variant that may accompany a missing value, and a
 /// present value may never be `Unavailable`. [`Measured`] enforces both.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Accuracy {
     Exact {
@@ -175,7 +175,7 @@ impl Accuracy {
 /// The invariant — `value.is_some()` exactly when the accuracy is not
 /// `Unavailable` — is maintained by the constructors, and there is no public
 /// field-literal path around them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Measured<T> {
     /// `None` if and only if `accuracy` is `Unavailable`.
     pub value: Option<T>,

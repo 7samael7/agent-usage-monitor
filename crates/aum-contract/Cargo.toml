@@ -15,5 +15,4 @@ serde_json.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 rust_decimal.workspace = true
-utoipa.workspace = true
 thiserror.workspace = true

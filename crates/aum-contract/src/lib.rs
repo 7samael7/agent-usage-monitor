@@ -26,18 +26,9 @@
 //!   missing value cannot be rendered as zero.
 
 pub mod dto;
-pub mod events;
-pub mod handshake;
 pub mod measurement;
 pub mod money;
 pub mod tokens;
-
-/// Semver of the HTTP contract. The desktop app refuses to run against a
-/// backend whose major version differs.
-pub const CONTRACT_VERSION: &str = "1.0.0";
-
-/// Path prefix for every versioned route.
-pub const API_PREFIX: &str = "/v1";
 
 pub use dto::{
     AdapterDescriptor, AdapterState, CapabilityState, Comparison, ComparisonRow, CostBreakdown,
@@ -45,8 +36,6 @@ pub use dto::{
     MetaResponse, NewFxRate, NewPrice, Normalized, ObservedModel, PriceRow, PricingView,
     RequestCounts, SeriesPoint, SessionSummary, TaskBinding, TaskMetrics, TaskStatus, TaskSummary,
 };
-pub use events::{AgentEvent, EventEnvelope};
-pub use handshake::Handshake;
 pub use measurement::{Accuracy, DisplayKind, Measured, MeasurementSource, UnavailableReason};
 pub use money::{Currency, Money};
 pub use tokens::TokenBands;
