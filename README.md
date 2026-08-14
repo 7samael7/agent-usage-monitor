@@ -95,9 +95,26 @@ apps/desktop      Electron + React + TypeScript + Vite
 packages/api-contract   generated OpenAPI + TypeScript
 ```
 
-## Development
+## Running it
 
-Requirements: Rust 1.92 (pinned in `rust-toolchain.toml`), bun 1.3+, Node 22+.
+Requirements: Rust 1.92 (pinned in `rust-toolchain.toml`), bun 1.3+, Node 22+. `make doctor`
+checks for them.
+
+```bash
+make desktop
+```
+
+builds the app, installs it to `/Applications`, and opens it — after which it is in Spotlight and
+Launchpad like anything else. The bundle is ad-hoc signed, which needs no Apple Developer ID and is
+valid on the machine that built it.
+
+```bash
+make run
+```
+
+runs it from source with hot reload instead. `make help` lists the rest.
+
+## Development
 
 ```bash
 cargo test                 # backend
