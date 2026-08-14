@@ -25,6 +25,19 @@ export default defineConfig({
       rollupOptions: {
         input: { index: resolve(import.meta.dirname, 'src/preload/index.ts') },
         external: ['electron'],
+        // **A sandboxed preload script cannot be an ES module.** This package is
+        // `"type": "module"`, so a `.js` output is ESM, and Electron's sandboxed
+        // preload loader silently declines to run it: no error, no preload, and
+        // `window.monitor` simply never exists. The renderer then falls back to
+        // its browser-only mode and reports that the backend did not start —
+        // while the backend is in fact running perfectly.
+        //
+        // CommonJS with an explicit `.cjs` extension so Node's module detection
+        // cannot be fooled by the package type either way.
+        output: {
+          format: 'cjs',
+          entryFileNames: '[name].cjs',
+        },
       },
     },
   },
