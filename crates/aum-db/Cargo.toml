@@ -21,5 +21,6 @@ tracing.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+aum-contract.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tempfile = "3"

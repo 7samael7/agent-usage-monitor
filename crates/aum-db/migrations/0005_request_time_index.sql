@@ -1,0 +1,12 @@
+-- Reading usage by time, across everything.
+--
+-- Until now every aggregate was scoped to one task or one session, so the only
+-- indexes on `occurred_at` were compound ones led by `task_id` or `session_id`,
+-- plus a partial index for the unattributed view. A terminal tool asks a
+-- different question — "how many tokens per day, over the last year" — and none
+-- of those help it: every such query full-scans `ai_request`.
+--
+-- Tolerable at forty thousand rows. Not at a year of daily buckets on a machine
+-- that has been recording for a while, and the contribution heatmap asks for
+-- exactly that on every refresh.
+CREATE INDEX ix_req_time ON ai_request(occurred_at);

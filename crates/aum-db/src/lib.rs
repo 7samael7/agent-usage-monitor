@@ -20,6 +20,7 @@
 pub mod desktop;
 pub mod pricing;
 pub mod repo;
+pub mod usage;
 pub mod writer;
 
 use std::path::Path;

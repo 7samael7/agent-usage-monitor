@@ -240,6 +240,71 @@ impl MoneyState {
     }
 }
 
+// ── Costing aggregated usage ────────────────────────────────────────────────
+
+/// Rebuild a `TokenUsage` from stored columns.
+///
+/// The columns were written from a `TokenUsage`, so the buckets are already
+/// disjoint and no provider semantics are re-applied here.
+fn to_usage(t: &aum_db::usage::Totals) -> aum_domain::TokenUsage {
+    let n = |v: i64| u64::try_from(v).unwrap_or(0);
+    aum_domain::TokenUsage::from_bands(aum_contract::TokenBands {
+        input_fresh: n(t.input_fresh),
+        cache_read: n(t.cache_read),
+        cache_write_5m: n(t.cache_write_5m),
+        cache_write_1h: n(t.cache_write_1h),
+        cache_write_unspecified: n(t.cache_write_unspecified),
+        output_total: n(t.output_total),
+        reasoning: t.reasoning.map(n),
+        unclassified: n(t.unclassified),
+    })
+}
+
+/// Cost a set of per-model slices.
+///
+/// **Per model, then summed.** Rates differ between models by up to ten times,
+/// so pricing a bucket's combined tokens at any single rate produces a figure
+/// that matches no actual rate — and looks entirely plausible while doing it.
+///
+/// A slice whose model has no price does not silently contribute zero. The
+/// underlying [`aum_pricing::cost_of_many`] returns a `Partial` carrying both
+/// the priced portion and how many models were missing, so the figure reads as
+/// a floor rather than a total. With nothing priced at all it is `Unavailable`,
+/// and with nothing measured at all it is `Unavailable` too — an empty day has
+/// no cost to report, which is not the same claim as a day that was free.
+#[must_use]
+pub fn cost_of_slices<'a>(
+    slices: impl IntoIterator<Item = (&'a Option<String>, &'a aum_db::usage::Totals)>,
+    table: &PriceTable,
+) -> aum_contract::Measured<aum_contract::Money> {
+    let items: Vec<_> = slices
+        .into_iter()
+        .map(|(model, totals)| (to_usage(totals), model.clone()))
+        .collect();
+    aum_pricing::cost_of_many(&items, table)
+}
+
+/// Cost each bucket of a day/hour series, keeping the bucket labels.
+#[must_use]
+pub fn cost_by_bucket(
+    slices: &[aum_db::usage::Slice],
+    table: &PriceTable,
+) -> Vec<(String, aum_contract::Measured<aum_contract::Money>)> {
+    let mut out: Vec<(String, Vec<&aum_db::usage::Slice>)> = Vec::new();
+    for s in slices {
+        match out.last_mut() {
+            Some((at, group)) if *at == s.at => group.push(s),
+            _ => out.push((s.at.clone(), vec![s])),
+        }
+    }
+    out.into_iter()
+        .map(|(at, group)| {
+            let cost = cost_of_slices(group.iter().map(|s| (&s.model_id, &s.totals)), table);
+            (at, cost)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

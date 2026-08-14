@@ -80,6 +80,7 @@ dependencies = [
 name = "aum-db"
 version = "0.1.0"
 dependencies = [
+ "aum-contract",
  "aum-domain",
  "chrono",
  "serde",
