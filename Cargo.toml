@@ -8,6 +8,7 @@ members = [
     "crates/aum-pricing",
     "crates/aum-adapters",
     "crates/aum-engine",
+    "crates/aum-tui",
     "xtask",
 ]
 
@@ -27,6 +28,7 @@ aum-ingest = { path = "crates/aum-ingest" }
 aum-pricing = { path = "crates/aum-pricing" }
 aum-adapters = { path = "crates/aum-adapters" }
 aum-engine = { path = "crates/aum-engine" }
+aum-tui = { path = "crates/aum-tui" }
 
 # ── serialization & types ────────────────────────────────────────────────────
 serde = { version = "1.0.229", features = ["derive"] }

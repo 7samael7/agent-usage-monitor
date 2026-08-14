@@ -1,0 +1,35 @@
+[package]
+name = "aum-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Terminal monitor for AI coding-agent token usage"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "aum"
+path = "src/main.rs"
+
+[dependencies]
+aum-contract.workspace = true
+aum-db.workspace = true
+aum-domain.workspace = true
+aum-engine.workspace = true
+aum-pricing.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap = { version = "4.6.6", features = ["derive"] }
+ratatui = "0.30.2"
+crossterm = "0.29.0"
