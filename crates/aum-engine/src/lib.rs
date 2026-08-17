@@ -42,6 +42,10 @@ pub struct IngestState {
     /// True until the first pass over existing history has finished, so the UI
     /// can distinguish "nothing here" from "still reading".
     pub backfilling: bool,
+    /// When the last pass finished, so an interface can say how current its
+    /// numbers are instead of implying they are current because it redrew.
+    /// `None` until one has completed.
+    pub last_pass_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Owns the adapters and the ingest loop.
@@ -56,6 +60,8 @@ pub struct Engine {
     /// One cache per root, so an idle pass costs a handful of `stat` calls
     /// rather than a full walk plus a database round-trip per file.
     caches: tokio::sync::Mutex<Vec<ScanCache>>,
+    /// Cuts the wait short when someone asks for a check now.
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl Engine {
@@ -72,12 +78,24 @@ impl Engine {
                 ..Default::default()
             })),
             caches: tokio::sync::Mutex::new(vec![ScanCache::new(), ScanCache::new()]),
+            wake: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
     #[must_use]
     pub fn state_handle(&self) -> Arc<RwLock<IngestState>> {
         Arc::clone(&self.state)
+    }
+
+    /// Ask the running loop to check the transcripts now rather than at the end
+    /// of its interval.
+    ///
+    /// Notifying this rather than building a second `Engine` matters: a fresh
+    /// engine starts with an empty scan cache and would re-read every file on
+    /// the machine to discover that nothing had changed.
+    #[must_use]
+    pub fn wake_handle(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.wake)
     }
 
     #[must_use]
@@ -142,6 +160,7 @@ impl Engine {
     /// rather than something to defer or paginate.
     pub async fn run(self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
         tracing::info!("ingest starting");
+        let wake = Arc::clone(&self.wake);
 
         loop {
             let stats = self.pass().await;
@@ -150,6 +169,7 @@ impl Engine {
                 state.passes = state.passes.saturating_add(1);
                 state.last = stats;
                 state.cumulative.merge(stats);
+                state.last_pass_at = Some(chrono::Utc::now());
                 if state.passes == 1 {
                     state.backfilling = false;
                     tracing::info!(
@@ -171,6 +191,9 @@ impl Engine {
 
             tokio::select! {
                 () = tokio::time::sleep(interval) => {}
+                // `Notify` holds one permit, so a wake sent while a pass was
+                // running is honoured at the end of it rather than lost.
+                () = wake.notified() => {}
                 _ = shutdown.changed() => break,
             }
         }

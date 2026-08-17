@@ -80,6 +80,36 @@ impl Tab {
     }
 }
 
+/// The ingest running behind the interface, or the reason there is none.
+///
+/// Not an `Option<Arc<…>>`: the interface has to *say* which of the two it is.
+/// The bug this replaced was an interface that re-read the database every two
+/// seconds, printed a fresh timestamp, and never once looked at the transcripts
+/// — so a stalled number and a current one were indistinguishable.
+pub enum Ingest {
+    Running {
+        state: std::sync::Arc<tokio::sync::RwLock<aum_engine::IngestState>>,
+        wake: std::sync::Arc<tokio::sync::Notify>,
+    },
+    /// `--no-sync`: report what is stored and read nothing.
+    Disabled,
+}
+
+impl Ingest {
+    async fn snapshot(&self) -> Option<aum_engine::IngestState> {
+        match self {
+            Self::Running { state, .. } => Some(*state.read().await),
+            Self::Disabled => None,
+        }
+    }
+
+    fn wake(&self) {
+        if let Self::Running { wake, .. } = self {
+            wake.notify_one();
+        }
+    }
+}
+
 pub struct App {
     pub tab: Tab,
     pub selected: usize,
@@ -87,6 +117,10 @@ pub struct App {
     pub help: bool,
     pub status: Option<String>,
     pub currency: &'static str,
+    pub ingest: Ingest,
+    /// What ingest had done as of the last redraw. Read from the shared state
+    /// rather than assumed, so "checked 2s ago" is a report and not a promise.
+    pub ingest_state: Option<aum_engine::IngestState>,
     /// Daily and hourly share one order: they are the same question at two
     /// resolutions, and `h` swaps between them mid-thought.
     pub bucket_sort: Sort,
@@ -161,7 +195,12 @@ fn restore() {
     );
 }
 
-pub async fn run(ctx: &Context, filter: &aum_db::usage::Filter, label: &str) -> anyhow::Result<()> {
+pub async fn run(
+    ctx: &Context,
+    filter: &aum_db::usage::Filter,
+    label: &str,
+    sync: bool,
+) -> anyhow::Result<()> {
     // Installed before raw mode, so even a panic during setup leaves a usable
     // shell behind.
     let previous = std::panic::take_hook();
@@ -169,6 +208,22 @@ pub async fn run(ctx: &Context, filter: &aum_db::usage::Filter, label: &str) -> 
         restore();
         previous(info);
     }));
+
+    // The ingest loop runs for as long as the interface is open. Without it the
+    // interface re-reads a database nobody is writing to, which is what "the
+    // numbers update on their own" used to mean here.
+    let (stop, stop_rx) = tokio::sync::watch::channel(false);
+    let ingest = if sync {
+        let engine = aum_engine::Engine::new(ctx.db.clone(), &ctx.home);
+        let running = Ingest::Running {
+            state: engine.state_handle(),
+            wake: engine.wake_handle(),
+        };
+        tokio::spawn(engine.run(stop_rx));
+        running
+    } else {
+        Ingest::Disabled
+    };
 
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(
@@ -180,7 +235,13 @@ pub async fn run(ctx: &Context, filter: &aum_db::usage::Filter, label: &str) -> 
     let backend = CrosstermBackend::new(std::io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let result = event_loop(&mut terminal, ctx, filter, label).await;
+    let result = event_loop(&mut terminal, ctx, filter, label, ingest).await;
+
+    // Told to stop, not waited for. A pass caught mid-file is dropped before it
+    // commits, so its cursor never advances and the next run reads it again —
+    // late, never lost. Waiting instead would hold the terminal in raw mode for
+    // however long a file takes.
+    let _ = stop.send(true);
 
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     restore();
@@ -194,6 +255,7 @@ async fn event_loop(
     ctx: &Context,
     filter: &aum_db::usage::Filter,
     label: &str,
+    ingest: Ingest,
 ) -> anyhow::Result<()> {
     let mut app = App {
         tab: Tab::Overview,
@@ -202,6 +264,8 @@ async fn event_loop(
         help: false,
         status: None,
         currency: ctx.currency_code(),
+        ingest_state: ingest.snapshot().await,
+        ingest,
         bucket_sort: Sort::NEWEST_FIRST,
         model_sort: Sort::LARGEST_FIRST,
         last_refresh: Instant::now(),
@@ -232,6 +296,7 @@ async fn event_loop(
             if let Ok(fresh) = Data::load(ctx, filter, label).await {
                 app.data = fresh;
             }
+            app.ingest_state = app.ingest.snapshot().await;
             app.last_refresh = Instant::now();
         }
     }
@@ -276,10 +341,20 @@ async fn handle_key(
             app.selected = 0;
         }
 
+        // Two separate things, and the message says which happened. The screen
+        // re-reads immediately; the transcripts are checked by the ingest loop,
+        // which is asked to go now and lands within a moment.
         KeyCode::Char('r') => {
+            app.ingest.wake();
             app.data = Data::load(ctx, filter, label).await?;
+            app.ingest_state = app.ingest.snapshot().await;
             app.last_refresh = Instant::now();
-            app.status = Some("refreshed".to_owned());
+            app.status = Some(match app.ingest {
+                Ingest::Running { .. } => "re-read; checking transcripts".to_owned(),
+                Ingest::Disabled => "re-read — started with --no-sync, so nothing is being \
+                                     read from disk"
+                    .to_owned(),
+            });
         }
 
         KeyCode::Char('e') => {

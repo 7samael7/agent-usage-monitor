@@ -118,14 +118,58 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(status.clone(), Style::default().fg(ACCENT)));
     }
+
+    // Two clocks, because they can disagree and the difference is the whole
+    // question. `read` is when the screen last queried the database; `checked`
+    // is when the transcripts were last looked at. A frozen number with a
+    // ticking clock beside it was this interface's most convincing bug.
+    let (checked, tone) = ingest_age(app.ingest_state, chrono::Utc::now());
     spans.push(Span::styled(
-        format!(
-            "   updated {}   ? help   q quit",
-            app.data.loaded_at.format("%H:%M:%S")
-        ),
+        format!("   read {}", app.data.loaded_at.format("%H:%M:%S")),
+        Style::default().fg(FAINT),
+    ));
+    spans.push(Span::styled(
+        format!(" · {checked}"),
+        Style::default().fg(tone),
+    ));
+    spans.push(Span::styled(
+        "   ? help   q quit",
         Style::default().fg(FAINT),
     ));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// How current the underlying data is, in words.
+///
+/// Takes the state rather than the whole `App`, and takes `now` rather than
+/// reading the clock, so what it says can be tested.
+fn ingest_age(
+    state: Option<aum_engine::IngestState>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (String, Color) {
+    let Some(state) = state else {
+        return ("not reading transcripts (--no-sync)".to_owned(), MUTED);
+    };
+    if state.backfilling {
+        return ("reading history…".to_owned(), Color::Indexed(179));
+    }
+    let Some(at) = state.last_pass_at else {
+        return ("not checked yet".to_owned(), Color::Indexed(179));
+    };
+    let seconds = (now - at).num_seconds().max(0);
+    let phrase = match seconds {
+        0..=4 => "checked just now".to_owned(),
+        5..=90 => format!("checked {seconds}s ago"),
+        _ => format!("checked {}m ago", seconds / 60),
+    };
+    // Ingest polls every two seconds at its slowest, so a minute of silence
+    // means something is wrong and the figures should stop looking current.
+    let tone = if seconds > 60 {
+        Color::Indexed(179)
+    } else {
+        FAINT
+    };
+    (phrase, tone)
 }
 
 fn block(title: &str) -> Block<'_> {
@@ -821,7 +865,7 @@ fn help(frame: &mut Frame, area: Rect) {
         key_line("↑ ↓  j k", "move through rows"),
         key_line("PgUp PgDn", "move a screen at a time"),
         key_line("h", "swap daily and hourly"),
-        key_line("r", "refresh now"),
+        key_line("r", "re-read, and check the transcripts now"),
         key_line("e", "export this view as JSON"),
         key_line("?", "this help"),
         key_line("q  Esc", "quit"),
@@ -840,7 +884,11 @@ fn help(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  Numbers refresh every two seconds on their own.",
+            "  Transcripts are read while this is open; the screen re-reads every",
+            Style::default().fg(MUTED),
+        )),
+        Line::from(Span::styled(
+            "  two seconds. The bar below says when each last happened.",
             Style::default().fg(MUTED),
         )),
         Line::from(Span::styled(
@@ -877,6 +925,89 @@ fn key_line(keys: &str, what: &str) -> Line<'static> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    fn at(
+        seconds_ago: i64,
+    ) -> (
+        Option<aum_engine::IngestState>,
+        chrono::DateTime<chrono::Utc>,
+    ) {
+        let now = chrono::Utc::now();
+        (
+            Some(aum_engine::IngestState {
+                passes: 1,
+                last_pass_at: Some(now - chrono::Duration::seconds(seconds_ago)),
+                ..Default::default()
+            }),
+            now,
+        )
+    }
+
+    #[test]
+    fn an_interface_that_is_not_reading_transcripts_says_so() {
+        // The bug this replaced: no ingest at all, and a status bar showing a
+        // fresh timestamp every two seconds because the *screen* had redrawn.
+        // Silence here is the failure mode, so there is no silent case.
+        let (text, _) = ingest_age(None, chrono::Utc::now());
+        assert!(text.contains("not reading"), "{text}");
+        assert!(text.contains("--no-sync"), "and why: {text}");
+    }
+
+    #[test]
+    fn an_empty_screen_during_the_first_pass_is_labelled_rather_than_believed() {
+        let now = chrono::Utc::now();
+        let (text, _) = ingest_age(
+            Some(aum_engine::IngestState {
+                backfilling: true,
+                ..Default::default()
+            }),
+            now,
+        );
+        assert!(text.contains("reading history"), "{text}");
+    }
+
+    #[test]
+    fn a_pass_that_has_never_finished_is_not_reported_as_recent() {
+        let (text, _) = ingest_age(Some(aum_engine::IngestState::default()), chrono::Utc::now());
+        assert!(text.contains("not checked"), "{text}");
+    }
+
+    #[test]
+    fn the_age_is_reported_in_units_that_stay_short() {
+        let (fresh, _) = ingest_age(at(1).0, at(1).1);
+        assert_eq!(fresh, "checked just now");
+        let (state, now) = at(30);
+        assert_eq!(ingest_age(state, now).0, "checked 30s ago");
+        let (state, now) = at(605);
+        assert_eq!(ingest_age(state, now).0, "checked 10m ago");
+    }
+
+    #[test]
+    fn a_stalled_ingest_stops_looking_ordinary() {
+        // Ingest polls every two seconds at its slowest. A minute of silence
+        // means something is wrong, and the figures on screen are older than
+        // they look — so the colour changes rather than the user having to
+        // notice a number creeping up.
+        let (state, now) = at(5);
+        let (_, ordinary) = ingest_age(state, now);
+        let (state, now) = at(300);
+        let (_, stalled) = ingest_age(state, now);
+        assert_ne!(ordinary, stalled);
+    }
+
+    #[test]
+    fn a_clock_that_went_backwards_does_not_produce_a_negative_age() {
+        let now = chrono::Utc::now();
+        let (text, _) = ingest_age(
+            Some(aum_engine::IngestState {
+                passes: 1,
+                last_pass_at: Some(now + chrono::Duration::seconds(30)),
+                ..Default::default()
+            }),
+            now,
+        );
+        assert_eq!(text, "checked just now", "{text}");
+    }
 
     #[test]
     fn compact_counts_stay_short_enough_for_a_bar_label() {

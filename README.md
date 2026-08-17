@@ -57,8 +57,13 @@ aum
 ```
 
 `Tab`/`←→` or `1`–`7` to move between tabs, `↑↓` for rows, `h` to swap daily and hourly, `r` to
-refresh, `e` to export the current view as JSON, `?` for the full key list, `q` to quit. Numbers
-update on their own while agents work.
+re-read now, `e` to export the current view as JSON, `?` for the full key list, `q` to quit.
+
+**The transcripts are read for as long as the interface is open**, so the numbers move while agents
+work. The bar along the bottom carries two clocks — `read` for when the screen last queried the
+database, `checked` for when the transcripts were last looked at — because those can disagree, and
+when they do it is the second one that tells you whether what you are reading is current. Started
+with `--no-sync`, it says `not reading transcripts` rather than looking merely quiet.
 
 The daily table opens with **today at the top**, and `d` `n` `t` `c` re-sort it by date, requests,
 tokens or cost — the same key again reverses it, and the sorted column is marked in its header. The

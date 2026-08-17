@@ -70,7 +70,46 @@ pub enum SortColumn {
     Cost,
 }
 
+/// When this invocation reads the transcripts.
+///
+/// Written down as a decision of its own because getting it wrong is invisible:
+/// an interface with no ingest behind it still redraws, still prints a
+/// timestamp, and still shows numbers — just never new ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Passes {
+    /// One pass before printing, so a report is not silently a day old.
+    pub before_reporting: bool,
+    /// A loop for as long as an interface is open.
+    pub while_open: bool,
+}
+
 impl Cli {
+    /// Which passes this invocation makes.
+    ///
+    /// `interactive` is whether the interface is about to open. It takes over
+    /// the reading entirely: a foreground pass first would be the same work
+    /// twice, with a blank terminal for the duration of it.
+    #[must_use]
+    pub fn passes(&self, interactive: bool) -> Passes {
+        if self.no_sync {
+            return Passes {
+                before_reporting: false,
+                while_open: false,
+            };
+        }
+        // `price` and `fx` write and print nothing that reading would change.
+        // `sync` skips it because making the pass *is* the command — otherwise
+        // it runs twice and reports the second, empty one.
+        let writes_only = matches!(
+            self.command,
+            Some(Command::Price { .. } | Command::Fx { .. } | Command::Sync)
+        );
+        Passes {
+            before_reporting: !interactive && !writes_only,
+            while_open: interactive,
+        }
+    }
+
     /// The order for a table, and what it is called.
     ///
     /// Chronological by default, unlike the interactive view, and for a reason
@@ -438,5 +477,55 @@ mod tests {
     fn an_unknown_sort_column_is_refused_rather_than_ignored() {
         use clap::Parser as _;
         assert!(Cli::try_parse_from(["aum", "daily", "--sort", "vibes"]).is_err());
+    }
+
+    #[test]
+    fn the_interface_reads_transcripts_for_as_long_as_it_is_open() {
+        // The regression this exists for: the interface used to make no passes
+        // at all. It re-read the database every two seconds, showed a fresh
+        // timestamp, and reported whatever the one startup pass had found —
+        // for as long as you left it open.
+        let p = parse(&[]).passes(true);
+        assert!(p.while_open, "an open interface must keep reading");
+        assert!(
+            !p.before_reporting,
+            "and should not also read once in the foreground first"
+        );
+    }
+
+    #[test]
+    fn a_printed_report_reads_once_before_printing() {
+        let p = parse(&["daily"]).passes(false);
+        assert!(p.before_reporting);
+        assert!(!p.while_open, "nothing is open to keep reading for");
+    }
+
+    #[test]
+    fn no_sync_means_no_reading_at_all_either_way() {
+        for interactive in [true, false] {
+            let p = parse(&["--no-sync"]).passes(interactive);
+            assert_eq!(
+                p,
+                Passes {
+                    before_reporting: false,
+                    while_open: false
+                },
+                "interactive={interactive}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_commands_that_are_a_pass_do_not_also_make_one_first() {
+        // `sync` would otherwise run twice and report the second, empty one.
+        for command in [
+            vec!["sync"],
+            vec!["fx", "EUR", "0.92"],
+            vec!["price", "m", "--input", "1", "--output", "2"],
+        ] {
+            let p = parse(&command).passes(false);
+            assert!(!p.before_reporting, "{command:?}");
+            assert!(!p.while_open, "{command:?}");
+        }
     }
 }

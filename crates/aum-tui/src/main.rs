@@ -51,24 +51,22 @@ async fn run() -> anyhow::Result<()> {
     let range = args.range.resolve(args.until.as_deref())?;
     let filter = range.filter(args.adapter.as_deref());
 
-    // Reports catch up before they report; a monitor showing yesterday's numbers
-    // without saying so is worse than one that takes a moment. Writing commands
-    // skip it so `aum price` is instant, and `sync` skips it because doing the
-    // pass *is* the command — otherwise it runs twice and reports the second,
-    // empty one.
-    let own_pass = matches!(
-        args.command,
-        Some(Command::Price { .. } | Command::Fx { .. } | Command::Sync)
-    );
-    let sync = !args.no_sync && !own_pass;
+    // No subcommand and a real terminal means the interactive view. With
+    // `--json`, or piped somewhere, it means the overview as text — a TUI
+    // written into a pipe is escape-code soup.
+    let interactive = args.command.is_none() && !args.json && colour;
+    let passes = args.passes(interactive);
 
-    let ctx = Context::open(args.db.as_deref(), &args.currency, colour, sync).await?;
+    let ctx = Context::open(
+        args.db.as_deref(),
+        &args.currency,
+        colour,
+        passes.before_reporting,
+    )
+    .await?;
 
     match args.command {
-        // No subcommand and a real terminal means the interactive view. With
-        // `--json`, or piped somewhere, it means the overview as text — a TUI
-        // written into a pipe is escape-code soup.
-        None if !args.json && colour => tui::run(&ctx, &filter, &range.label).await,
+        None if interactive => tui::run(&ctx, &filter, &range.label, passes.while_open).await,
         None | Some(Command::Overview) => {
             report::overview(&ctx, &filter, &range.label, args.json).await
         }
