@@ -1,28 +1,30 @@
-//! # `aum-contract` — the wire contract
+//! # `aum-contract` — the vocabulary
 //!
-//! This crate is the boundary between the desktop app and whatever implements
-//! the backend. It has **no internal dependencies**, and that is the point: a
-//! Go, C#, or Python reimplementation satisfies the same OpenAPI document and
-//! the desktop app needs no changes at all.
+//! Every type in this crate exists to make a number carry how well it is known.
+//! It has **no internal dependencies**, and did not acquire any when everything
+//! around it changed.
 //!
-//! What a replacement backend must provide, in full:
+//! It began as a wire contract: this was the boundary between an Electron app
+//! and a Rust backend over loopback HTTP, and the promise was that a Go or
+//! Python reimplementation serving the same OpenAPI document would need no
+//! frontend changes. The HTTP layer is gone and the interface is a terminal in
+//! the same process, so there is no wire and nothing to be compatible with.
 //!
-//! 1. Bind `127.0.0.1:0` and print one [`handshake::Handshake`] line to stdout;
-//!    log to stderr.
-//! 2. Serve the paths in `packages/api-contract/openapi.json` with matching
-//!    schemas.
-//! 3. Serve `GET /v1/events` as SSE with `id:` lines, honouring `Last-Event-ID`.
-//! 4. Enforce bearer token + `Host` + `Origin`.
-//!
-//! Nothing else. No shared library, no FFI, no IPC framing.
+//! What survived the deletion is the part that was never about transport. These
+//! are the words the whole codebase uses to talk about certainty, and they turned
+//! out to be domain vocabulary that happened to serialise well rather than wire
+//! types that happened to be useful.
 //!
 //! ## Conventions that carry meaning
 //!
-//! * Every enum here is **internally tagged**. Internally-tagged enums map
-//!   cleanly to OpenAPI `oneOf` + `discriminator` *and* to TypeScript
-//!   discriminated unions; externally-tagged ones do not.
-//! * [`money::Money`] serializes as a **decimal string**, never a JSON number.
-//! * [`measurement::Measured`] is the only way a number reaches the UI, so a
+//! * Every enum here is **internally tagged**, so a serialised
+//!   [`measurement::Accuracy`] names itself. It was chosen for OpenAPI
+//!   `discriminator` and TypeScript unions; it is kept because `--json` output
+//!   that says `"kind": "partial"` beside a value is self-describing to whatever
+//!   reads it next.
+//! * [`money::Money`] serialises as a **decimal string**, and its deserializer
+//!   *rejects* a JSON number rather than accepting a float's rounding.
+//! * [`measurement::Measured`] is the only way a number reaches a screen, so a
 //!   missing value cannot be rendered as zero.
 
 pub mod dto;

@@ -48,6 +48,12 @@ check: ## Everything CI would run: format, lint, test
 fmt: ## Format
 	cargo fmt --all
 
+.PHONY: redact
+redact: ## Make a fixture from a real transcript: make redact IN=... OUT=...
+	@test -n "$(IN)" -a -n "$(OUT)" \
+		|| { echo "usage: make redact IN=<transcript.jsonl> OUT=tests/fixtures/<name>.jsonl"; exit 2; }
+	cargo xtask redact "$(IN)" "$(OUT)"
+
 .PHONY: doctor
 doctor: ## Check that the tools this needs are present
 	@printf 'cargo       '; cargo --version 2>/dev/null || echo "MISSING — https://rustup.rs"

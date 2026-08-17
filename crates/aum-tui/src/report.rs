@@ -431,8 +431,13 @@ fn warn_unpriced(ctx: &Context, per_model: &[(Option<String>, Totals)]) {
         return;
     }
     println!(
-        "\n{} of these models have no price, so their cost reads as — rather than as zero:",
-        missing.len()
+        "\n{}, so {} cost reads as — rather than as zero:",
+        if missing.len() == 1 {
+            "1 of these models has no price".to_owned()
+        } else {
+            format!("{} of these models have no price", missing.len())
+        },
+        if missing.len() == 1 { "its" } else { "their" }
     );
     for m in &missing {
         println!("    aum price {m} --input <rate> --output <rate>");

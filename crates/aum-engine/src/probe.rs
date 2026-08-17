@@ -43,7 +43,6 @@ pub const CAPABILITIES: &[&str] = &[
     "provider_reported_cost",
     "actual_billed_cost",
     "sub_agent_attribution",
-    "launch_with_pinned_session",
     "failure_visibility",
 ];
 
@@ -359,21 +358,10 @@ pub fn describe_file_adapter(
         },
     );
 
-    capabilities.insert(
-        "launch_with_pinned_session",
-        match adapter_id {
-            "claude_code" => supported("--session-id fixes the identity before the process starts"),
-            "codex" => CapabilityState::Degraded {
-                evidence: "the event stream is read from the monitor's own child process"
-                    .to_owned(),
-                caveat: "There is no flag to pin a session id, so a launched task binds when its \
-                         stream announces one. Attribution is still exact, but it happens a moment \
-                         after launch rather than before."
-                    .to_owned(),
-            },
-            _ => unknown("This application cannot be launched by the monitor."),
-        },
-    );
+    // `launch_with_pinned_session` was here while the monitor could start
+    // agents itself. It reads history now, so the row would have described a
+    // capability of a feature that no longer exists — the most convincing kind
+    // of wrong answer, since everything about it was once true.
 
     capabilities.insert(
         "failure_visibility",
@@ -706,9 +694,10 @@ mod tests {
     }
 
     #[test]
-    fn codex_launch_is_degraded_rather_than_claimed_or_denied() {
-        // It cannot pin a session before launch, but attribution is still
-        // exact. Neither "yes" nor "no" would be true.
+    fn no_capability_describes_a_feature_the_monitor_no_longer_has() {
+        // The monitor used to launch agents, and reported per-adapter how well
+        // it could pin a session id. A row that outlives its feature is worse
+        // than no row: every word of it is plausible.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("rollout-x.jsonl"),
@@ -727,10 +716,15 @@ mod tests {
         let result = probe(&CodexAdapter, dir.path(), &jsonl);
         let d = describe_file_adapter("codex", "Codex", &result, None, true);
 
-        assert!(matches!(
-            state(&d, "launch_with_pinned_session"),
-            CapabilityState::Degraded { .. }
-        ));
+        let reported: Vec<&str> = d.capabilities.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(
+            !reported.iter().any(|k| k.contains("launch")),
+            "the monitor no longer launches anything: {reported:?}"
+        );
+        assert!(
+            reported.contains(&"exact_token_counts"),
+            "the reading capabilities are still reported: {reported:?}"
+        );
     }
 
     fn a_daily_total() -> aum_contract::DailyTotal {

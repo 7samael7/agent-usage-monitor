@@ -212,10 +212,13 @@ itself exact:
 2. the observation window is complete — monitoring did not start mid-session, no events were missed, no
    reconciliation failed, no subagent directory was unreadable.
 
-`AggregateAccuracy::Exact` is reachable through exactly one constructor requiring proof of both. Twelve
-exact requests plus one unavailable yields `MixedWithGaps`, and the UI renders
-`847,231 tokens — 12 of 13 requests measured, 1 unmeasured`. There is no code path from that state to the
-string "EXACT".
+This is `Accuracy::Partial { measured, total, reason }`, and it is why the type carries a mandatory
+`reason` rather than just the two counts. Twelve exact requests plus one unavailable renders as
+`≥847,231` with `12 of 13 requests measured` behind it — never as a plain number.
+
+The `reason` is load-bearing in a case the counts alone get wrong: a session observed from halfway
+through has every request it *saw* measured, so `13 of 13` would read as complete. The sentence is what
+distinguishes "all of them" from "all of the ones we were there for".
 
 ---
 
@@ -292,33 +295,35 @@ crates/aum-adapters/
 ```
 
 ```rust
-#[async_trait]
 pub trait UsageAdapter: Send + Sync + 'static {
     fn id(&self) -> AdapterId;
-    fn meta(&self) -> AdapterMeta;
 
-    async fn detect(&self) -> Detection;
-    async fn probe_capabilities(&self, d: &Detection) -> CapabilitySet;
-    async fn watch_roots(&self, d: &Detection) -> Vec<WatchRoot>;
-
-    /// HOT PATH. Pure, synchronous, no I/O.
-    fn parse_line(&self, ctx: &mut LineCtx, line: &[u8]) -> ParseOutcome;
-    /// Cheap byte prefilter. Conservative: false positives fine, false negatives are data loss.
+    /// Cheap byte prefilter. Conservative: a false positive costs one wasted
+    /// parse, a false negative silently loses a measurement.
     fn is_candidate_line(&self, head: &[u8]) -> bool;
 
-    fn launch_spec(&self, req: &LaunchRequest) -> Result<LaunchSpec, LaunchError>;
-    async fn live_sessions(&self, d: &Detection) -> Vec<LiveSessionCandidate>;
+    /// The hot path. Pure and synchronous — no I/O.
+    fn parse_line(&self, ctx: &mut LineCtx, line: &[u8]) -> ParseOutcome;
 }
 ```
 
+Three methods, none of them async. It began larger — `detect`, `probe_capabilities`, `watch_roots`,
+`launch_spec`, `live_sessions` — and every one of those was either about launching agents or about
+lifecycle the engine turned out to be doing anyway. Capability probing did not disappear with them: it
+moved to `aum-engine::probe`, which answers the question by *running the parser over the adapter's own
+recent files*, so the matrix is evidence rather than a declaration an adapter could get wrong about
+itself.
+
 `parse_line` being pure and synchronous is a deliberate structural choice: backfill can run on a blocking
 pool with no async overhead, and parsers are unit-testable against golden fixtures with zero runtime.
-Only the handful of lifecycle methods are async, so `#[async_trait]`'s boxing cost is irrelevant and we
-keep `dyn` compatibility for free.
 
-Adapters emit `RawSignal`s — `SessionOpened`, `TurnContext`, `Usage`, `ProviderCost`, `RateLimit`,
-`Anomaly` — and never touch the database. Each is isolated, so a change in Claude Code's or Codex's
-format breaks one parser and one set of golden tests, not the application.
+Adapters emit `Signal`s — `SessionOpened`, `ModelDeclared`, `Usage`, `RequestFailed`, `RetryAttempt`,
+`ContextCompacted`, `Anomaly` — and never touch the database. Each is isolated, so a change in Claude
+Code's or Codex's format breaks one parser and one set of golden tests, not the application.
+
+`ModelDeclared` is separate from `Usage` on purpose: Codex reports usage without naming a model, so a
+tailer that starts mid-file legitimately does not know which one, and the cost must be *unavailable*
+rather than assumed from whatever was seen last.
 
 ### 6.1 Capabilities are discovered, not declared
 
@@ -338,63 +343,41 @@ PerRequestLatency = Unsupported { reason: "no latency field in transcripts; enab
 
 ## 7. Attribution
 
-> Attribution is by identity, never by heuristic. If identity is not established, usage is recorded
-> against `task_id = NULL` and surfaced in an **Unattributed** view. It is never guessed into a task.
+> Attribution is by identity, never by heuristic. Every request belongs to the session its own
+> transcript names, and to nothing else.
 
-Working directory is explicitly **not** a binding. On the machine this was designed against, three Claude
-Code sessions were live simultaneously in the same `cwd`, and that one project directory held 77
-transcripts. `cwd → session` is one-to-many; it is used only to filter the candidate list in the attach
-UI, where a human makes the choice.
+That is a much smaller claim than it used to be, and the reason is worth recording. The monitor could
+once launch an agent itself and pin its identity in advance, or attach to a running one. Both are gone:
+it reads history now. What remains is the only binding that never needed a process to be involved —
+the session id the agent writes into its own file.
 
-**Launched mode** (the monitor spawns the agent) gives exact attribution by construction:
+Working directory is explicitly **not** a binding. On the machine this was designed against, three
+Claude Code sessions were live simultaneously in the same `cwd`, and that one project directory held 77
+transcripts. `cwd → session` is one-to-many, so it identifies nothing; it names the file's parent
+directory and no more.
 
-- *Claude Code* — we generate the session UUID and pass `--session-id <uuid>`. Subagent and workflow
-  transcripts carry the same parent `sessionId`, so they attribute automatically.
-- *Codex* — we run `codex exec --json` and read the event stream from **our own child's stdout**. Same
-  events, same parser, no filesystem correlation required.
+The ingest write path performs exactly one indexed equality lookup, on the session id. There is no
+fuzzy match, no scoring and no nearest-neighbour anywhere in it. Claude Code's sub-agent and workflow
+transcripts carry their parent's `sessionId`, so a fan-out attributes to the session that caused it
+without any correlation step at all.
 
-**Attached mode** binds an already-running agent: Claude via `~/.claude/sessions/<pid>.json`, validated
-against the OS process start time to defeat PID reuse. Ambiguity is surfaced, never resolved by picking.
+### 7.1 What the schema still carries
 
-The guarantee that twenty concurrent tasks cannot cross-contaminate is structural, not diligent:
-
-```sql
-CREATE TABLE task_binding (
-  session_id TEXT PRIMARY KEY,   -- a session belongs to at most ONE task, enforced by SQLite
-  task_id    TEXT NOT NULL REFERENCES task(id) ON DELETE CASCADE,
-  method     TEXT NOT NULL,      -- launched_pinned | pid_session_file | session_id_exact | user_assigned
-  evidence   TEXT NOT NULL       -- JSON proof of this binding
-);
-```
-
-The ingest write path performs exactly one indexed equality lookup, `session_id → task_id`. There is no
-fuzzy match, no scoring and no nearest-neighbour anywhere in it. A conservation check runs every tick:
-
-```
-Σ(attributed to tasks) + Σ(unattributed) == Σ(all observed usage)
-```
-
-which is what makes the Unattributed bucket load-bearing rather than a dumping ground — totals still
-reconcile, and the user can see exactly what the app declined to guess about.
+`task`, `task_binding` and the `task_id` column on `ai_request` remain, unwritten. Requests recorded
+while launching existed keep their bindings and still read back correctly; everything ingested since
+has `task_id IS NULL`, which is what `unattributed` now means for a session. Dropping the columns would
+have rewritten history to say those runs were never attributed, which is false.
 
 ---
 
-## 8. Benchmark → Task → Session → Request
+## 8. Session → Request
 
 ```
-Benchmark            a named comparison ("Implement JWT authentication")
-  └── Task           one competitor's attempt (agent + command + working dir)
-        └── Binding  session_id → task_id   (PRIMARY KEY: at most one task per session)
-              └── AgentSession    a provider session observed by an adapter
-                    └── AiRequest one logical model turn
-                          ├── TokenUsage        one row per measurement source
-                          └── CostCalculation   one row per cost basis
+AgentSession           a provider session observed by an adapter
+  └── AiRequest        one logical model turn
+        ├── TokenUsage        one row per measurement source
+        └── CostCalculation   one row per cost basis
 ```
-
-A `Task` is the unit of measurement and may exist without a benchmark (ad-hoc monitoring). A
-`Benchmark` groups tasks for comparison and carries the environment metadata that makes a run
-reproducible: OS, CPU, RAM, app version, adapter versions, model identifiers, pricing version, FX
-version, start and end.
 
 `TokenUsage` is a separate table rather than columns on `AiRequest` because Claude Code can report the
 same request three ways — transcript, OTEL, and `stream-json` — and comparing them is precisely the
@@ -429,26 +412,36 @@ Three quantities, three fields, never one column called "Cost":
 | Quantity | Meaning | On this machine |
 |---|---|---|
 | **API-equivalent** | What this usage would cost on pay-as-you-go, from our versioned price table. | Computed |
-| **Provider-reported** | The agent's own cost figure (`total_cost_usd`, `claude_code.cost.usage`). | Claude Code only |
+| **Provider-reported** | The agent's own cost figure, if it writes one. | **Unavailable** — neither agent writes one |
 | **Actual billed** | What the user was actually charged. | **Unavailable** — both agents are subscription-billed |
 
+Two of the three are unavailable, and that is the honest state rather than a gap to be filled. An
+earlier draft of this document said Claude Code reported its own cost; it does not, and the **Apps**
+tab says so from evidence — `provider_reported_cost — no cost figure appears in the files this
+application writes` — for both agents.
+
 Presenting an API-equivalent figure as though the user was charged it would be the most consequential
-dishonesty this application could commit, so `<Money>` requires an explicit `kind` prop with no default;
-there is no way to render a currency amount without declaring which of the three it is.
+dishonesty this application could commit. Every screen and every table that shows a cost also shows the
+line `actually billed — subscription, not billed per token`, and no total anywhere is labelled just
+"cost".
 
-Prices are versioned and **append-only**. A user edit creates a new version and closes the previous one,
-so a benchmark run in March still displays March's numbers; recalculation is an explicit, audited action.
-An unknown model yields `Unavailable { NoPricingForModel }` and a prompt to set a price — never a
-substituted "similar" model's rate. This matters immediately: `claude-opus-5`, `claude-fable-5` and
-`gpt-5.6-sol` all appear in the real corpus and in no public price list.
+Prices are versioned and **append-only**. A price edit creates a new version and closes the previous
+one, so usage recorded in March still displays March's rates; recalculation is an explicit action. An
+unknown model yields `Unavailable { NoPricingForModel }` and a footer saying how many models lack a rate
+and that `aum price` sets one — never a substituted "similar" model's rate. This matters immediately:
+`claude-opus-5`, `claude-fable-5` and `gpt-5.6-sol` all appear in the real corpus and in no public price
+list.
 
-Money is `rust_decimal::Decimal` in process, integer nano-USD at rest, and a **decimal string** on the
-wire — a JSON number would be silently mangled by JavaScript. Costs are summed exactly and rounded once
-at display; rounding per request and then summing drifts the total and forfeits any claim that it is
-exact.
+Money is `rust_decimal::Decimal` in process, integer nano-USD at rest, and a **decimal string** when
+serialised — a JSON number would be silently mangled by any consumer that parses it as a float, and
+`Money`'s deserializer rejects one outright rather than accepting the rounding. Costs are summed exactly
+and rounded once at display; rounding per request and then summing drifts the total and forfeits any
+claim that it is exact.
 
-Divergence beyond 2 % between our figure and the provider's raises a `PricingDrift` anomaly. That is the
-application self-testing its own price table.
+There is deliberately no drift check against a provider figure. An earlier design had one — divergence
+beyond 2 % raising a `PricingDrift` anomaly, the application self-testing its own price table — and it
+was never implemented, because the figure it would compare against does not exist in either agent's
+files. A cross-check with only one side is not a cross-check.
 
 ---
 
@@ -471,86 +464,78 @@ even the numerator's timestamp is ambiguous — we take the *earliest* and recor
 The inter-message wall-clock type therefore has no conversion to a rate; the metric is `Unavailable`
 until a capture level that can measure it is enabled.
 
-Benchmark cells that are Unavailable render as such, with a chip naming what would make them available.
-Sorting or ranking on a column that is Unavailable for either side is disabled — sorting a column with a
-missing side is exactly the mechanism by which a UI invents a winner.
+So there is no latency column anywhere in the interface. Not an empty one, not one full of dashes: the
+tables show what is measured, and a permanently-unavailable metric earns a sentence in the **Apps**
+tab (`per_request_latency — the files this application writes contain no latency or time-to-first-token
+information`) rather than a column that invites someone to sort by it.
 
 ---
 
 ## 11. Process architecture
 
+One process.
+
 ```
-┌──────────────────────────── Electron ────────────────────────────┐
-│  main      lifecycle, windows, sidecar supervision. No domain     │
-│            knowledge. ~250 lines.                                 │
-│  preload   contextBridge only, 8 control-plane channels           │
-│  renderer  the entire product. Talks HTTP/SSE to the sidecar.     │
-└───────────────────────────────────────────────────────────────────┘
-                │ spawn + one-line stdout handshake {port, pid, contract_version}
-                │ token passed via env, never argv (argv is world-readable)
-                ▼
-┌──────────────────────── Rust sidecar ────────────────────────────┐
-│  aum-server   axum on 127.0.0.1:0, JSON + SSE, bearer auth        │
-│  aum-engine   task supervisor, bindings, adapter lifecycle, bus   │
+┌───────────────────────────── aum ────────────────────────────────┐
+│  aum-tui      clap subcommands · Ratatui tabs, charts, heatmap    │
+│  aum-engine   adapter lifecycle, capability probing, costing      │
 │  aum-adapters claude_code · codex · claude_desktop                │
 │  aum-ingest   tailer: cursors, partial lines, prefilter, batching │
 │  aum-db       SQLite (WAL), migrations, single write actor        │
 │  aum-domain   TokenUsage, Money, MeasurementSource  (pure)        │
 │  aum-pricing  versioned prices, FX, decimal cost engine           │
+│  aum-contract Measured, Accuracy, TokenBands — the vocabulary     │
 └───────────────────────────────────────────────────────────────────┘
+        │ reads                                    │ writes
+        ▼                                          ▼
+  ~/.claude/projects/  ~/.codex/sessions/     ~/Library/Application Support/
+  Claude/buddy-tokens.json                    agent-usage-monitor/capture.sqlite3
 ```
 
-**Business logic lives in Rust.** Electron starts a binary, reads one line from its stdout, and kills it
-on quit. Usage data does not cross Electron IPC: routing it through the main process would require a
-marshalling layer per DTO, which would quietly become a second, drifting copy of the domain model — and
-would serialize hundreds of structured clones per second behind menu handling and window events, in an
-application whose whole purpose is to not perturb what it measures.
+This was, until recently, an Electron application supervising a Rust sidecar over loopback HTTP with a
+bearer token and an SSE stream. That boundary bought replaceability — a Go or Python backend serving the
+same OpenAPI document would have needed no frontend changes — and it cost a blank window from a request
+filter cancelling its own asset fetch, then a "backend did not start" screen from a preload module the
+Electron sandbox could not load. Neither bug had anything to do with token accounting, and neither was
+visible to any test.
 
-The replaceability boundary is therefore exactly three things: a one-line stdout handshake, the HTTP
-surface described by `packages/api-contract/openapi.json`, and an SSE stream honouring `Last-Event-ID`. A
-Go, C# or Python reimplementation satisfying those needs no changes anywhere in the desktop app. The
-`tools/fake-sidecar` Bun script exists partly to prove this continuously: if the app runs unmodified
-against a TypeScript backend, it will run against any of them.
+What replaced it is a function call. The interface reads through the same `aum-engine` API the
+subcommands use; there is no wire format between them, so there is nothing to keep in sync and no
+serialization boundary to be wrong at. `aum-contract` still exists and is still dependency-free — it is
+where `Measured`, `Accuracy` and `TokenBands` live, and those are domain vocabulary that happened to be
+useful as wire types, not the other way round.
 
-### 11.1 Local transport is still a security boundary
+The replaceability that boundary was protecting turned out to be needed in the other direction: the
+*interface* was the part that got replaced, and the measuring half moved across untouched.
 
-Any local process — and any web page in any browser — can reach `127.0.0.1`. Four layers, all mandatory:
-an ephemeral port; a 256-bit bearer token compared in constant time; a `Host` header that must equal
-`127.0.0.1:<port>` (this is what defeats DNS rebinding, which cannot forge `Host`); and an exact `Origin`
-allowlist with no wildcard. The SSE stream is read with `fetch` + `ReadableStream` rather than
-`EventSource`, because `EventSource` cannot set headers and putting the token in a query string leaks it
-into logs.
+### 11.1 Concurrency
 
-### 11.2 Backpressure
+Ingest runs on a background task and the interface redraws on a timer, both against the same pool: the
+single write actor keeps SQLite's one-writer rule, and readers go through WAL, so a redraw never blocks
+a write. Adapters → pipeline is a **bounded, lossless** channel — if the database is slow, ingest slows
+down and never drops tokens.
 
-Adapters → pipeline is a **bounded, lossless** channel: if the database is slow, ingest slows down and
-never drops tokens. Pipeline → SSE is a **bounded, lossy** broadcast: a slow browser must never stall
-ingest, and a lagged client receives a `Resync` telling it to re-fetch. Live traffic is preferred over
-historical backfill by a biased select.
-
-Two rules keep the frontend both simple and correct: every event type has a corresponding GET that
-returns the same state, so a client that misses events is always one request from correct; and the
-per-second snapshot carries **absolute cumulative totals**, so the UI never accumulates deltas and a
-dropped connection cannot permanently corrupt a running total.
+Every refresh re-reads absolute totals rather than accumulating deltas. A missed tick therefore cannot
+permanently corrupt a running total; the worst case is a screen that is two seconds stale and then
+correct.
 
 ---
 
 ## 12. Privacy
 
-- No account, no telemetry, no analytics, no cloud database, no remote backend.
+- No account, no telemetry, no analytics, no cloud database, no remote backend, **no listening socket**.
 - Storage is a single local SQLite file under the OS application-support directory.
-- **Content storage is off by default** — prompts, responses and tool input/output are not recorded.
-  Metadata only: timestamps, provider, model, token counts, cost, duration, status, task, application.
-  Enabling content storage carries an explicit warning that AI conversations routinely contain secrets.
-- Exports never include content unless content storage is explicitly enabled.
-- The renderer is structurally incapable of reaching the network: a CSP plus a request filter in the
-  Electron main process cancels any renderer request that is not the local sidecar, and the count of
-  blocked attempts is shown in Settings.
-- The only outbound network the application makes at all is exchange-rate and pricing updates, from the
-  sidecar, each individually disableable. Offline, the last known FX rate is used and its age is
-  displayed — an old rate is never presented as current.
+- **Content is not stored at all** — prompts, responses and tool input/output are never recorded, and
+  there is no setting that turns them on. Metadata only: timestamps, adapter, model, token counts by
+  band, cost, status, session.
+- Exports contain what the tables contain: counts, costs, identifiers. There is no content to export.
+- The dependency graph contains **no HTTP client and no TLS library**, and no code here opens a socket.
+  Prices and FX rates are entered with `aum price` and `aum fx`; nothing is fetched, so nothing can be
+  fetched from the wrong place. (`sqlx` does enable `tokio/net` transitively — see `docs/privacy.md`,
+  which is careful about the difference between "does not" and "cannot".)
 - Test fixtures derived from real transcripts are redacted before they are written, preserving every
-  number and structural field while replacing all free text.
+  number and structural field while replacing all free text. The redactor verifies its own output and
+  writes nothing if anything would still be published.
 
 ---
 
@@ -561,6 +546,6 @@ dropped connection cannot permanently corrupt a running total.
 | `docs/architecture.md` | this document |
 | `docs/capture-methods.md` | the four capture levels in detail, and per-adapter fidelity |
 | `docs/privacy.md` | what is stored, where, and what leaves the machine |
-| `docs/benchmarking.md` | running comparisons, metrics, and their comparability caveats |
+| `docs/comparing-agents.md` | which columns may honestly be compared between agents, and which may not |
 | `docs/adapter-development.md` | adding support for a new AI application |
 | `docs/pricing.md` | the pricing model, versioning, and currency handling |

@@ -5,12 +5,13 @@
 | | What it means | Typical state here |
 |---|---|---|
 | **API-equivalent** | What this usage would cost on pay-as-you-go, from our price table | computed, when the model has a price |
-| **Provider-reported** | The agent's own cost figure | available only via OpenTelemetry |
+| **Provider-reported** | The agent's own cost figure | **unavailable** — neither agent writes one |
 | **Actual billed** | What you were really charged | **unknown** under a subscription |
 
-These are never summed and never collapsed into a column called "cost". The
-`<Money>` component requires an explicit `kind` prop with no default, so an
-amount cannot reach the screen without declaring which of the three it is.
+These are never summed and never collapsed into a column called "cost". The row
+labelled `API-equivalent` is always followed by `actually billed —  subscription,
+not billed per token`, on every screen and in every export, so the number is
+never alone on the page with a currency symbol and no qualifier.
 
 Presenting an API-equivalent figure as though you were charged it would be the
 most consequential dishonesty this application could commit. Both agents on a
@@ -22,8 +23,8 @@ unknowable and says so.
 **No floats.** `rust_decimal` end to end. A cent cannot be represented in binary
 floating point, and per-request amounts are frequently in the 1e-7 range and
 summed over tens of thousands of requests. Money is stored as integer nano-units
-and crosses the wire as a **decimal string** — a JSON number would be silently
-mangled by JavaScript.
+and serialised as a **decimal string** — `Money`'s deserializer *rejects* a JSON
+number rather than accepting whatever a float parser made of it.
 
 **Round once, at the end.** Each request is costed exactly, the exact values are
 summed, and the result is rounded only for display. Rounding per request and
@@ -65,12 +66,19 @@ whose buckets are disjoint by construction. Charging cached input twice
 
 Prices are **append-only**. Correcting one adds a version with a new
 `effective_from` and closes the previous one; nothing is edited in place. Each
-cost row pins the pricing version it used, so a benchmark run in March still
-displays March's numbers in August, and recalculating is an explicit, audited
-action.
+cost row pins the pricing version it used, so usage recorded in March still
+displays March's rates in August, and recalculating is an explicit action.
 
-A user's own entry beats a seeded one at equal specificity, because someone who
-has typed in a rate knows something the seed does not.
+A rate you entered yourself beats a seeded one at equal specificity, because
+someone who has typed in a rate knows something the seed does not:
+
+```bash
+aum price gpt-5.6-terra --input 2.00 --output 12.00 --note "openai pricing page, 2026-08-17"
+```
+
+`--cache-read` defaults to the input rate, which is both providers' documented
+behaviour. It does **not** default to zero: pricing cache reads as free would
+understate a long session by most of its total.
 
 ## Currency
 
@@ -79,7 +87,11 @@ presentation, produced by applying a dated rate.
 
 Conversion **downgrades certainty**. A converted amount is at best *calculated*,
 never exact — it depends on a rate that was true at a moment and is not now. An
-amount converted with a rate a week or more old becomes *estimated* and the
-interface states the rate's age and date. Offline is a normal state, not an
-error; presenting a twelve-day-old rate as current would be a small lie
-compounding on top of an already-approximate cost.
+amount converted with a rate a week or more old becomes *estimated*, and the
+output states the rate's age and date rather than merely flagging it.
+
+Nothing fetches rates. You enter one with `aum fx EUR 0.92` and it is stored
+with the date you entered it, which is exactly why the staleness rule exists: a
+rate typed in last month is still sitting there, and presenting a twelve-day-old
+rate as current would be a small lie compounding on top of an already-approximate
+cost.

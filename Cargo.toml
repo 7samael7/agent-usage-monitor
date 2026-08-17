@@ -37,24 +37,33 @@ chrono = { version = "0.4.45", features = ["serde"] }
 uuid = { version = "1.24.0", features = ["v4", "v7", "serde"] }
 rust_decimal = { version = "1.42.1", features = ["serde-with-str"] }
 
-# ── async & http ─────────────────────────────────────────────────────────────
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "io-std", "process", "signal"] }
+# ── async ────────────────────────────────────────────────────────────────────
+#
+# No `net`, `process` or `signal`: nothing here opens a socket, launches a
+# process or signals one.
+#
+# This is not a compile-time guarantee that the binary cannot reach the network,
+# and it should not be described as one: `sqlx` enables `tokio/net` transitively
+# for the database drivers it ships alongside SQLite. What is checkable is that
+# the dependency graph contains no HTTP client and no TLS stack at all — see
+# `docs/privacy.md`, which states the claim at exactly that strength.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "io-std"] }
 
 # ── storage ──────────────────────────────────────────────────────────────────
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "uuid", "migrate", "macros"] }
 
 # ── system & io ──────────────────────────────────────────────────────────────
-sysinfo = "0.38.4"
-# Safe wrappers for process-group signalling. Needed because stopping a task
-# must signal the agent's whole tree, not just the process we spawned.
-nix = { version = "0.30", features = ["signal"] }
+#
+# `sysinfo` and `nix` were here to walk process trees and signal an agent's
+# whole process group. Reading history needs neither, and a monitor that no
+# longer enumerates every process on the machine should not link the library
+# that can.
 notify = "8.2.0"
 memchr = "2.8.3"
 dirs = "6.0.0"
 
-# ── crypto & rng ─────────────────────────────────────────────────────────────
+# ── crypto ───────────────────────────────────────────────────────────────────
 sha2 = "0.11.0"
-rand = "0.10.2"
 
 # ── diagnostics ──────────────────────────────────────────────────────────────
 tracing = "0.1.44"

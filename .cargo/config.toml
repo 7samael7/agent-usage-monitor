@@ -1,0 +1,8 @@
+# `cargo xtask <task>` — repository chores that need real code rather than a
+# shell one-liner. `.gitignore` and the docs name `cargo xtask redact` as the
+# control that stands between a real transcript and this repository's remote;
+# this alias is what makes that command exist.
+#
+# `--quiet` so the tool's own report is the only thing on stdout.
+[alias]
+xtask = "run --quiet --package xtask --"

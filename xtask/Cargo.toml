@@ -5,5 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "Repository chores that need real code rather than a shell one-liner"
+
+[lints]
+workspace = true
 
 [dependencies]
+anyhow.workspace = true
+serde_json.workspace = true

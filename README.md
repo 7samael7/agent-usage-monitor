@@ -1,156 +1,185 @@
 # agent-usage-monitor
 
-A private, local-first desktop application that measures, records, visualises and compares AI token
-usage produced by AI agents running on your own machine — Claude Code, Codex, and other local AI
-coding tools.
+A private, local-first terminal application that measures, records and prices the AI token usage
+produced by coding agents running on your own machine — Claude Code and Codex today, others as
+adapters are added.
 
-It is part usage monitor, part session profiler, part cost analyser, part benchmark harness. You can
-run two agents at the same task, side by side, and see exactly what each one consumed.
+It reads what those agents already write to disk. It launches nothing, sends nothing, and needs no
+account.
 
 > **The rule this project is built around:** a number is never presented as more certain than it is.
 > Every measurement carries its source. Missing data is shown as *unavailable* — never as zero, and
 > never quietly replaced by an estimate.
 
-## Status
+```
+$ aum overview
 
-Working. It reads both agents' usage, launches and monitors tasks, prices what it can, and shows
-what it found — including what it could not measure. Verified against a real corpus of 43,761
-requests across 522 files.
+Usage — all time
 
-Not yet built: the local proxy for third-party clients, and OpenTelemetry ingestion (which is what
-would make latency measurable). See [`docs/architecture.md`](docs/architecture.md) for the design.
+  requests       44,639   (55 failed and could not be measured)
+  total tokens   8,853,828,550
+  input side     8,817,956,640
+  output         32,789,248
+  reasoning      ≥3,647,647
+  API-equivalent ≥$6531.14
+  actually billed —  subscription, not billed per token
 
-There is also **no tokenizer counting**, and that is a decision rather than a gap. A tokenizer can
-only produce an estimate, and an estimate is worth having exactly where nothing better exists —
-which is nowhere here. Both agents report provider-authored counts, where an estimate that disagreed
-would be strictly worse; the one source without per-request counts, Claude Desktop, also exposes no
-text to count. `TokenizerCalculated` remains in the wire contract so a different backend can report it and
-this interface will render it as *Calculated*, but this backend never produces it.
+Top models
+model                      requests         tokens   reasoning       cost  rate /Mtok (USD)
+claude-opus-5                15,031  3,814,180,913           —  ≈$2746.17  $5 in / $25 out
+gpt-5.6-terra                13,830  2,016,295,303  ≥2,264,436   ≥$572.83  $2 in / $12 out
+claude-fable-5                3,047    972,048,584           —  ≈$1420.20  $10 in / $50 out
+
+exact · ≈ calculated · ≥ at least · — not measured
+```
+
+Every figure says how well it is known. `≥3,647,647` is a floor, because Codex reports reasoning
+tokens and Claude Code reports none at all; summing them would produce something that looks like a
+measurement and isn't. `≈` marks a cost calculated from a rate you can see and change. `—` is not
+zero. And the 55 requests that failed are named as unmeasured rather than folded in as free.
+
+`aum` with no subcommand opens the same data as a full-screen interface: seven tabs, bar charts per
+day and hour, and a year-wide contribution graph.
+
+## Installing
+
+Requirements: Rust 1.92, pinned in `rust-toolchain.toml`. `make doctor` checks.
+
+```bash
+make install
+```
+
+That is `cargo install --path crates/aum-tui`, which puts `aum` in `~/.cargo/bin`. Then, in any
+terminal:
+
+```bash
+aum
+```
+
+`Tab`/`←→` or `1`–`7` to move between tabs, `↑↓` for rows, `h` to swap daily and hourly, `r` to
+refresh, `e` to export the current view as JSON, `?` for the full key list, `q` to quit. Numbers
+update on their own while agents work.
+
+## From a script
+
+Every tab is also a subcommand, and every subcommand takes `--json`:
+
+```bash
+aum daily --week                    # a table
+aum models --json                   # the same data, machine-readable
+aum sessions --since 2026-08-01 --adapter codex
+aum overview --currency EUR
+aum sync                            # one ingest pass, then exit — for cron
+```
+
+Ranges: `--today`, `--week`, `--month`, `--year 2026`, or `--since`/`--until` with a date or an
+RFC 3339 timestamp. `--no-color` and `NO_COLOR` are both honoured; the certainty markers are text, so
+nothing is lost without colour.
+
+Prices ship for the models these agents use, and can be overridden:
+
+```bash
+aum price gpt-5.6-terra --input 2.00 --output 12.00 --cache-read 0.20
+aum fx EUR 0.92
+```
 
 ## What it measures, and how honestly
 
 | Application | Detected | Exact tokens | Model | API-equivalent cost | Latency |
 |---|---|---|---|---|---|
-| Claude Code | yes | **yes** — provider usage relayed to disk | yes | yes | needs OTEL or proxy |
-| Codex (CLI, desktop, VS Code) | yes | **yes** — including reasoning tokens | yes | yes | needs OTEL or proxy |
+| Claude Code | yes | **yes** — provider usage relayed to disk | yes | yes | no |
+| Codex (CLI, desktop, VS Code) | yes | **yes** — including reasoning tokens | yes | yes | no |
 | Claude Desktop | yes | **no** — a daily total only, not per request | no | no | no |
-| Generic OpenAI/Anthropic client | via proxy | yes, when routed through the local proxy | yes | yes | yes |
 
-This table is not marketing copy. The application generates its own capability matrix at runtime from
-what each adapter actually observes in real data, and the Applications screen will disagree with this
-README if the tools change underneath it.
+This table is not marketing copy. The **Apps** tab generates the same matrix at runtime from what
+each adapter actually observes in real data, with the evidence beside each row, and it will disagree
+with this README if the tools change underneath it.
 
 **Claude Desktop deserves the emphasis.** It writes plan-limit percentages, from which there is no
 defensible conversion to a token count, and one running token total for the current day. That total
-is real and the app shows it — as itself, on the Applications screen, with what it covers stated
-beside it. It carries no model, no input/output split and no conversation, so it can never be
-attributed to a task or priced, and it is kept out of every aggregate that could imply otherwise.
-The app also keeps the history, because Claude Desktop discards the counter at midnight.
+is real and the app shows it — as itself, on the Apps tab, with what it covers stated beside it. It
+carries no model, no input/output split and no conversation, so it can never be priced, and it is
+kept out of every aggregate that could imply otherwise. The app keeps the history, because Claude
+Desktop discards the counter at midnight.
+
+**Latency is unavailable everywhere**, and stays that way. Neither agent records it. The gap between
+two message timestamps contains tool execution, retry backoff and user think time, so dividing output
+tokens by it yields a plausible, well-scaled, entirely wrong tokens-per-second figure. That would
+need OpenTelemetry ingestion or a local proxy, neither of which is built.
+
+There is also **no tokenizer counting**, and that is a decision rather than a gap. A tokenizer only
+produces an estimate, and an estimate is worth having exactly where nothing better exists — which is
+nowhere here. Both agents report provider-authored counts, where a disagreeing estimate would be
+strictly worse; the one source without per-request counts, Claude Desktop, exposes no text to count
+either.
 
 ## Why there is no traffic sniffing
 
 Watching encrypted traffic from a closed desktop client would require terminating its TLS connection —
 installing a root certificate and impersonating the provider. This project does not do that, and it
-would not even work: token accounting happens server-side against the fully-assembled prompt, including
-system prompts and tool schemas the client never sees. Counting the visible request body locally gives a
-number that is structurally too low, and calling it exact would be a lie with a plausible shape.
+would not even work: token accounting happens server-side against the fully-assembled prompt,
+including system prompts and tool schemas the client never sees. Counting the visible request body
+locally gives a number that is structurally too low, and calling it exact would be a lie with a
+plausible shape.
 
-Instead the app reads what applications already choose to write down, and offers an opt-in local proxy
-for clients you configure yourself. See [`docs/capture-methods.md`](docs/capture-methods.md).
+See [`docs/capture-methods.md`](docs/capture-methods.md).
 
 ## Privacy
 
-No account. No telemetry. No analytics. No cloud database. No remote backend.
+No account. No telemetry. No analytics. No cloud database. No remote backend. No network listener —
+there is no server and no port.
 
-Everything is stored in a local SQLite file. Prompt text, response text and tool input/output are
-**not** recorded by default — only metadata. The renderer process is structurally prevented from
-reaching the network: a CSP plus a request filter in the Electron main process cancels anything that is
-not the local sidecar, and the count of blocked attempts is visible in Settings. The only outbound
-network the application makes at all is exchange-rate and pricing updates, each individually
-disableable.
-
-See [`docs/privacy.md`](docs/privacy.md).
+One local SQLite file, two directories read. Prompt text, response text and tool input/output are
+**not** recorded: metadata only. See [`docs/privacy.md`](docs/privacy.md).
 
 ## Architecture in one paragraph
 
-An Electron app handles lifecycle, windows and native integration, and supervises a **Rust sidecar**
-that holds all the business logic. They speak over loopback HTTP + SSE, bootstrapped by a single line of
-JSON on the sidecar's stdout. The contract between them is an OpenAPI document, which is what makes the
-backend replaceable — a Go, C# or Python implementation serving the same document needs no changes
-anywhere in the desktop app.
+One binary. `aum` opens the SQLite database, starts the ingest engine on a background task, and draws
+from it; the CLI subcommands run the same queries and print instead. There is no server, no IPC and
+no serialization boundary inside the process — the interface calls the engine directly.
 
 ```
 crates/
-  aum-contract    wire types only, zero internal dependencies — the replaceable boundary
-  aum-domain      TokenUsage, Money, MeasurementSource, normalization  (pure, no I/O)
-  aum-db          SQLite, migrations, single write actor
+  aum-contract    Measured, Accuracy, Money, TokenBands — the vocabulary, zero dependencies
+  aum-domain      TokenUsage normalization  (pure, no I/O)
+  aum-db          SQLite, migrations, single write actor, aggregation queries
   aum-ingest      file tailer: cursors, partial lines, prefilter, batching
   aum-adapters    claude_code · codex · claude_desktop
-  aum-procmon     process trees, launching, (pid, start_time) identity
   aum-pricing     versioned prices, FX, decimal cost engine
-  aum-engine      task supervisor, bindings, adapter lifecycle, event bus
-  aum-server      axum router, SSE, auth, handshake
-  aum-sidecar     the binary
-apps/desktop      Electron + React + TypeScript + Vite
-packages/api-contract   generated OpenAPI + TypeScript
+  aum-engine      adapter lifecycle, capability probing, costing views
+  aum-tui         the `aum` binary: CLI and Ratatui interface
+xtask/            repository chores — `cargo xtask redact`
 ```
-
-## Running it
-
-Requirements: Rust 1.92 (pinned in `rust-toolchain.toml`), bun 1.3+, Node 22+. `make doctor`
-checks for them.
-
-```bash
-make desktop
-```
-
-builds the app, installs it to `/Applications`, and opens it — after which it is in Spotlight and
-Launchpad like anything else. The bundle is ad-hoc signed, which needs no Apple Developer ID and is
-valid on the machine that built it.
-
-```bash
-make run
-```
-
-runs it from source with hot reload instead. `make help` lists the rest.
 
 ## Development
 
 ```bash
-cargo test                 # backend
-cargo clippy --all-targets # lints
-bun install                # desktop dependencies
-bun run dev                # Electron in development
+make check                 # fmt --check, clippy -D warnings, and the whole test suite
+cargo test
+cargo run -p aum-tui       # run without installing
 ```
 
-Tests that read this machine's own agent data are ignored by default, because
-they need data that only exists where the agents have really run:
+Tests that read this machine's own agent data are ignored by default, because they need data that
+only exists where the agents have really run:
 
 ```bash
 cargo test -p aum-adapters --test real_corpus -- --ignored --nocapture
 cargo test -p aum-engine   --test probe_real  -- --ignored --nocapture
 ```
 
-To package for macOS ARM64:
-
-```bash
-bun run --cwd apps/desktop package
-```
-
-The sidecar is spawned as a compiled binary, never via `cargo run` — `cargo run` writes build output to
-stdout, which would corrupt the handshake line. Rebuild it in a separate terminal:
-
-```bash
-cargo build -p aum-sidecar
-```
-
 ## Contributing a fixture
 
 Golden-file tests are built from real agent transcripts, which contain prompts, responses and source
-code. **Run every fixture through `scripts/redact-fixture.ts` before it goes anywhere near the
-repository.** Redaction preserves every number and structural field and replaces all free text; a test
-asserts that nothing unredacted is present, and `.gitignore` blocks `*.jsonl` outside
-`tests/fixtures/`.
+code. **Run every transcript through `cargo xtask redact` before it goes anywhere near this
+repository:**
+
+```bash
+make redact IN=~/.claude/projects/<slug>/<session>.jsonl OUT=tests/fixtures/claude_code/<name>.jsonl
+```
+
+Redaction keeps every number and structural field and replaces all free text. It verifies its own
+output and writes nothing if anything would still be published; `cargo test fixtures_are_redacted`
+re-checks what is already committed, and `.gitignore` blocks `*.jsonl` outside `tests/fixtures/`.
 
 ## Documentation
 
@@ -159,7 +188,7 @@ asserts that nothing unredacted is present, and `.gitignore` blocks `*.jsonl` ou
 | [`docs/architecture.md`](docs/architecture.md) | design, data sources, normalization, attribution |
 | [`docs/capture-methods.md`](docs/capture-methods.md) | the four capture levels and per-adapter fidelity |
 | [`docs/privacy.md`](docs/privacy.md) | what is stored, where, and what leaves the machine |
-| [`docs/benchmarking.md`](docs/benchmarking.md) | running comparisons and their comparability caveats |
+| [`docs/comparing-agents.md`](docs/comparing-agents.md) | which columns may honestly be compared between agents |
 | [`docs/adapter-development.md`](docs/adapter-development.md) | adding support for a new AI application |
 | [`docs/pricing.md`](docs/pricing.md) | pricing model, versioning, currencies |
 

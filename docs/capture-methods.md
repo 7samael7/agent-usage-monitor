@@ -130,16 +130,17 @@ number cannot answer:
   five times and the split is not given either;
 - **no request boundary**, so it cannot be a request count, a latency, or a
   per-turn anything;
-- **no session id**, so it can never be attributed to a task — and attribution
-  in this application is by identity, never by timing or coincidence;
+- **no session id**, so it can never join anything — and attribution in this
+  application is by identity, never by timing or coincidence;
 - **today only**: the counter resets at midnight and the previous day is
   discarded, so the history exists only because the monitor samples it.
 
-It is therefore carried on the adapter as its own `dailyTotal`, with a sentence
-stating its scope attached to the value, and it is stored in a table the
-per-task and per-model aggregates do not read. That separation is structural
-rather than careful: there is no query that could accidentally fold a
-whole-application daily figure into a task's total.
+It is therefore carried on the adapter as its own daily total, with a sentence
+stating its scope attached to the value, and stored in `desktop_daily_tokens` —
+a table none of the request aggregates read. That separation is structural rather
+than careful: those queries run over `ai_request`, and this number is not in it,
+so there is no query that could accidentally fold a whole-application daily
+figure into a per-model or per-day total.
 
 Classified `ApplicationTelemetry` — Claude Desktop computed this itself, and
 nothing in the file indicates the provider's own per-request usage — so it
