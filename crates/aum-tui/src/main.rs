@@ -14,6 +14,7 @@ mod cli;
 mod context;
 mod fmt;
 mod report;
+mod sort;
 mod tui;
 
 use clap::Parser as _;
@@ -71,13 +72,21 @@ async fn run() -> anyhow::Result<()> {
         None | Some(Command::Overview) => {
             report::overview(&ctx, &filter, &range.label, args.json).await
         }
+        // Chronological unless asked otherwise: printed output scrolls, so the
+        // last row is the one left beside the prompt. The interactive view
+        // defaults the other way, because there the first row is the visible one.
         Some(Command::Daily) => {
-            report::buckets(&ctx, &filter, &range.label, false, args.json).await
+            let sort = args.sort_order(sort::Sort::OLDEST_FIRST);
+            report::buckets(&ctx, &filter, &range.label, false, args.json, sort).await
         }
         Some(Command::Hourly) => {
-            report::buckets(&ctx, &filter, &range.label, true, args.json).await
+            let sort = args.sort_order(sort::Sort::OLDEST_FIRST);
+            report::buckets(&ctx, &filter, &range.label, true, args.json, sort).await
         }
-        Some(Command::Models) => report::models(&ctx, &filter, &range.label, args.json).await,
+        Some(Command::Models) => {
+            let sort = args.sort_order(sort::Sort::LARGEST_FIRST);
+            report::models(&ctx, &filter, &range.label, args.json, sort).await
+        }
         Some(Command::Sessions { limit }) => report::sessions(&ctx, limit, args.json).await,
         Some(Command::Apps) => report::apps(&ctx, args.json).await,
         Some(Command::Sync) => sync_once(&ctx, args.json).await,

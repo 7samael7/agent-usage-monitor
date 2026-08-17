@@ -11,6 +11,10 @@ use serde_json::json;
 use crate::context::Context;
 use crate::fmt::{self, Align, Table};
 
+/// What a model with no reported id is called. One spelling, shared with the
+/// interactive view, so the two tables never disagree about the same row.
+pub const NOT_REPORTED: &str = "(not reported)";
+
 /// The certainty as a stable JSON token. A machine reader needs a word it can
 /// match on, and it must be the same word every release.
 const fn kind_name(kind: aum_contract::DisplayKind) -> &'static str {
@@ -195,7 +199,11 @@ pub async fn overview(
 
     if !per_model.is_empty() {
         println!("\n{}", heading("Top models", c));
-        print!("{}", model_table(ctx, &per_model, 8));
+        // Biggest first, always: the overview's job is to say where it went.
+        let costs = model_costs(ctx, &per_model);
+        let mut rows = crate::sort::join_models(&per_model, &costs, NOT_REPORTED);
+        crate::sort::apply(&mut rows, crate::sort::Sort::LARGEST_FIRST);
+        print!("{}", model_table(ctx, &rows, 8));
     }
 
     println!("\n{}", fmt::legend(c));
@@ -211,6 +219,7 @@ pub async fn buckets(
     label: &str,
     hourly: bool,
     json: bool,
+    sort: crate::sort::Sort,
 ) -> anyhow::Result<()> {
     let slices = if hourly {
         usage::by_hour_model(ctx.db.reader(), filter).await?
@@ -220,31 +229,36 @@ pub async fn buckets(
     let folded = usage::fold_by_bucket(&slices);
     // Costed per model within each bucket, then summed — never from the
     // bucket's blended tokens.
-    let costs = aum_engine::prices::cost_by_bucket(&slices, &ctx.money.table);
+    let costs: Vec<_> = aum_engine::prices::cost_by_bucket(&slices, &ctx.money.table)
+        .into_iter()
+        .map(|(at, m)| (at, ctx.cost().present(m)))
+        .collect();
+
+    let mut rows = crate::sort::join(&folded, &costs);
+    crate::sort::apply(&mut rows, sort);
+
+    let unmeasured = Measured::unavailable(aum_contract::UnavailableReason::NoTelemetry {
+        detail: "no usage in this bucket".to_owned(),
+    });
 
     if json {
-        let rows: Vec<_> = folded
+        let out: Vec<_> = rows
             .iter()
-            .map(|(at, t)| {
-                let cost = costs
-                    .iter()
-                    .find(|(a, _)| a == at)
-                    .map(|(_, m)| ctx.cost().present(m.clone()))
-                    .unwrap_or_else(|| {
-                        Measured::unavailable(aum_contract::UnavailableReason::NoTelemetry {
-                            detail: "no usage in this bucket".to_owned(),
-                        })
-                    });
+            .map(|r| {
                 json!({
-                    "at": at,
-                    "totals": totals_json(t),
-                    "cost": measured_money_json(&cost, ctx.currency_code()),
+                    "at": r.label,
+                    "totals": totals_json(r.totals),
+                    "cost": measured_money_json(r.cost.unwrap_or(&unmeasured), ctx.currency_code()),
                 })
             })
             .collect();
         println!(
             "{}",
-            serde_json::to_string_pretty(&json!({ "range": label, "buckets": rows }))?
+            serde_json::to_string_pretty(&json!({
+                "range": label,
+                "order": sort.describe(crate::sort::Labels::Time),
+                "buckets": out,
+            }))?
         );
         return Ok(());
     }
@@ -254,14 +268,16 @@ pub async fn buckets(
     println!("{}", heading(&format!("{unit} usage — {label}"), c));
     println!();
 
-    if folded.is_empty() {
+    if rows.is_empty() {
         println!("  Nothing recorded in this range.");
         return Ok(());
     }
 
-    let peak = folded
+    // The bar is scaled to the largest row, whatever order they are printed in,
+    // so re-sorting never changes how long a given day's bar is.
+    let peak = rows
         .iter()
-        .map(|(_, t)| t.grand_total())
+        .map(|r| r.totals.grand_total())
         .max()
         .unwrap_or(1)
         .max(1);
@@ -275,28 +291,24 @@ pub async fn buckets(
         ("cost", Align::Right),
         ("", Align::Left),
     ]);
-    for (at, totals) in &folded {
-        let cost = costs
-            .iter()
-            .find(|(a, _)| a == at)
-            .map(|(_, m)| ctx.cost().present(m.clone()))
-            .unwrap_or_else(|| {
-                Measured::unavailable(aum_contract::UnavailableReason::NoTelemetry {
-                    detail: "no usage".to_owned(),
-                })
-            });
+    for r in &rows {
         t.push(vec![
-            at.replace('T', " "),
-            fmt::thousands(totals.requests),
-            fmt::thousands(totals.input_side()),
-            fmt::thousands(totals.output_total),
-            fmt::thousands(totals.grand_total()),
-            fmt::render_money(&cost, ctx.currency_code(), c),
-            bar(totals.grand_total(), peak, 24, c),
+            r.label.replace('T', " "),
+            fmt::thousands(r.totals.requests),
+            fmt::thousands(r.totals.input_side()),
+            fmt::thousands(r.totals.output_total),
+            fmt::thousands(r.totals.grand_total()),
+            fmt::render_money(r.cost.unwrap_or(&unmeasured), ctx.currency_code(), c),
+            bar(r.totals.grand_total(), peak, 24, c),
         ]);
     }
     print!("{}", t.render(c));
-    println!("\n{}", fmt::legend(c));
+    // The order of one row is not information.
+    println!(
+        "\n{}{}",
+        fmt::legend(c),
+        order_note(rows.len(), sort, crate::sort::Labels::Time)
+    );
     Ok(())
 }
 
@@ -319,7 +331,13 @@ fn bar(value: i64, peak: i64, width: usize, colourise: bool) -> String {
 
 // ── Models ──────────────────────────────────────────────────────────────────
 
-pub async fn models(ctx: &Context, filter: &Filter, label: &str, json: bool) -> anyhow::Result<()> {
+pub async fn models(
+    ctx: &Context,
+    filter: &Filter,
+    label: &str,
+    json: bool,
+    sort: crate::sort::Sort,
+) -> anyhow::Result<()> {
     let per_model = usage::by_model(ctx.db.reader(), filter).await?;
 
     if json {
@@ -350,7 +368,11 @@ pub async fn models(ctx: &Context, filter: &Filter, label: &str, json: bool) -> 
             .collect();
         println!(
             "{}",
-            serde_json::to_string_pretty(&json!({ "range": label, "models": rows }))?
+            serde_json::to_string_pretty(&json!({
+                "range": label,
+                "order": sort.describe(crate::sort::Labels::Name),
+                "models": rows,
+            }))?
         );
         return Ok(());
     }
@@ -362,14 +384,45 @@ pub async fn models(ctx: &Context, filter: &Filter, label: &str, json: bool) -> 
         println!("  Nothing recorded in this range.");
         return Ok(());
     }
-    print!("{}", model_table(ctx, &per_model, usize::MAX));
-    println!("\n{}", fmt::legend(c));
+    let costs = model_costs(ctx, &per_model);
+    let mut rows = crate::sort::join_models(&per_model, &costs, NOT_REPORTED);
+    crate::sort::apply(&mut rows, sort);
+    print!("{}", model_table(ctx, &rows, usize::MAX));
+    println!(
+        "\n{}{}",
+        fmt::legend(c),
+        order_note(rows.len(), sort, crate::sort::Labels::Name)
+    );
     warn_unpriced(ctx, &per_model);
     Ok(())
 }
 
-fn model_table(ctx: &Context, per_model: &[(Option<String>, Totals)], limit: usize) -> String {
+/// The order, named — but only where there is an order to name.
+fn order_note(rows: usize, sort: crate::sort::Sort, labels: crate::sort::Labels) -> String {
+    if rows < 2 {
+        return String::new();
+    }
+    format!("   ({})", sort.describe(labels))
+}
+
+/// Cost each model on its own, in the order the models arrive.
+fn model_costs(ctx: &Context, per_model: &[(Option<String>, Totals)]) -> Vec<Measured<Money>> {
+    per_model
+        .iter()
+        .map(|(model, totals)| {
+            ctx.cost().present(aum_engine::prices::cost_of_slices(
+                std::iter::once((model, totals)),
+                &ctx.money.table,
+            ))
+        })
+        .collect()
+}
+
+fn model_table(ctx: &Context, rows: &[crate::sort::Row<'_>], limit: usize) -> String {
     let c = ctx.colour;
+    let uncosted = Measured::unavailable(aum_contract::UnavailableReason::NoTelemetry {
+        detail: "not costed".to_owned(),
+    });
     let mut t = Table::new(&[
         ("model", Align::Left),
         ("requests", Align::Right),
@@ -378,43 +431,39 @@ fn model_table(ctx: &Context, per_model: &[(Option<String>, Totals)], limit: usi
         ("cost", Align::Right),
         ("rate /Mtok (USD)", Align::Left),
     ]);
-    for (model, totals) in per_model.iter().take(limit) {
-        let cost = ctx.cost().present(aum_engine::prices::cost_of_slices(
-            std::iter::once((model, totals)),
-            &ctx.money.table,
-        ));
-        let rate = model
-            .as_deref()
-            .and_then(|m| ctx.money.table.lookup(m))
-            .map_or_else(
-                || {
-                    if c {
-                        format!(
-                            "{}not priced{}",
-                            fmt::colour(aum_contract::DisplayKind::Estimated),
-                            fmt::RESET
-                        )
-                    } else {
-                        "not priced".to_owned()
-                    }
-                },
-                // Always in USD, whatever the display currency: rates are what
-                // the provider publishes, and only the computed cost is
-                // converted. Showing "€5 in" would claim the provider charges
-                // five euros, which it does not.
-                |p| {
+    for r in rows.iter().take(limit) {
+        let cost = r.cost.unwrap_or(&uncosted);
+        // A row whose model was never reported looks up nothing, which is the
+        // right answer: an unnamed model cannot have a price.
+        let rate = ctx.money.table.lookup(r.label).map_or_else(
+            || {
+                if c {
                     format!(
-                        "${} in / ${} out",
-                        p.rates.input_per_mtok, p.rates.output_per_mtok
+                        "{}not priced{}",
+                        fmt::colour(aum_contract::DisplayKind::Estimated),
+                        fmt::RESET
                     )
-                },
-            );
+                } else {
+                    "not priced".to_owned()
+                }
+            },
+            // Always in USD, whatever the display currency: rates are what
+            // the provider publishes, and only the computed cost is
+            // converted. Showing "€5 in" would claim the provider charges
+            // five euros, which it does not.
+            |p| {
+                format!(
+                    "${} in / ${} out",
+                    p.rates.input_per_mtok, p.rates.output_per_mtok
+                )
+            },
+        );
         t.push(vec![
-            model.clone().unwrap_or_else(|| "(not reported)".to_owned()),
-            fmt::thousands(totals.requests),
-            fmt::thousands(totals.grand_total()),
-            fmt::render_tokens(&reasoning_measure(totals), c),
-            fmt::render_money(&cost, ctx.currency_code(), c),
+            r.label.to_owned(),
+            fmt::thousands(r.totals.requests),
+            fmt::thousands(r.totals.grand_total()),
+            fmt::render_tokens(&reasoning_measure(r.totals), c),
+            fmt::render_money(cost, ctx.currency_code(), c),
             rate,
         ]);
     }

@@ -60,6 +60,11 @@ aum
 refresh, `e` to export the current view as JSON, `?` for the full key list, `q` to quit. Numbers
 update on their own while agents work.
 
+The daily table opens with **today at the top**, and `d` `n` `t` `c` re-sort it by date, requests,
+tokens or cost — the same key again reverses it, and the sorted column is marked in its header. The
+chart above stays in time order whatever the table does. A row whose cost could not be worked out
+sorts to the *end* either way: an unpriced row is not a cheap one.
+
 ## From a script
 
 Every tab is also a subcommand, and every subcommand takes `--json`:
@@ -75,6 +80,15 @@ aum sync                            # one ingest pass, then exit — for cron
 Ranges: `--today`, `--week`, `--month`, `--year 2026`, or `--since`/`--until` with a date or an
 RFC 3339 timestamp. `--no-color` and `NO_COLOR` are both honoured; the certainty markers are text, so
 nothing is lost without colour.
+
+`--sort date|requests|tokens|cost` and `--reverse` order the rows, and the output says which order it
+used. Printed tables are chronological by default — the opposite of the interactive view, because
+printed rows scroll and the *last* one is the one left beside your prompt:
+
+```bash
+aum daily --reverse                 # today first
+aum models --sort cost              # where the money went
+```
 
 Prices ship for the models these agents use, and can be overridden:
 

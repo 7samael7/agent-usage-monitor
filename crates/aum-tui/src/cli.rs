@@ -49,6 +49,62 @@ pub struct Cli {
     /// Do not read new transcripts before reporting; use what is already stored.
     #[arg(long, global = true)]
     pub no_sync: bool,
+
+    /// Order the rows of `daily`, `hourly` and `models`.
+    #[arg(long, global = true, value_name = "COLUMN", value_enum)]
+    pub sort: Option<SortColumn>,
+
+    /// Reverse whatever order is in force.
+    #[arg(long, global = true)]
+    pub reverse: bool,
+}
+
+/// The column a table may be ordered by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum SortColumn {
+    /// Date, hour, or model name.
+    Date,
+    Requests,
+    Tokens,
+    /// Rows with no price sort last either way — they are not cheap rows.
+    Cost,
+}
+
+impl Cli {
+    /// The order for a table, and what it is called.
+    ///
+    /// Chronological by default, unlike the interactive view, and for a reason
+    /// rather than an oversight: printed output scrolls, so the *last* line is
+    /// the one left beside your prompt. Oldest first puts today there. In a
+    /// fixed viewport the first row is the one you see, so the interface
+    /// defaults the other way.
+    #[must_use]
+    pub fn sort_order(&self, default: crate::sort::Sort) -> crate::sort::Sort {
+        use crate::sort::Key;
+        let mut sort = match self.sort {
+            Some(SortColumn::Date) => crate::sort::Sort {
+                key: Key::Label,
+                descending: false,
+            },
+            Some(SortColumn::Requests) => crate::sort::Sort {
+                key: Key::Requests,
+                descending: true,
+            },
+            Some(SortColumn::Tokens) => crate::sort::Sort {
+                key: Key::Tokens,
+                descending: true,
+            },
+            Some(SortColumn::Cost) => crate::sort::Sort {
+                key: Key::Cost,
+                descending: true,
+            },
+            None => default,
+        };
+        if self.reverse {
+            sort.descending = !sort.descending;
+        }
+        sort
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -337,5 +393,50 @@ mod tests {
         .resolve(Some("2026-08-13"))
         .unwrap();
         assert!(r.until.is_some());
+    }
+
+    fn parse(args: &[&str]) -> Cli {
+        use clap::Parser as _;
+        Cli::try_parse_from(std::iter::once("aum").chain(args.iter().copied())).unwrap()
+    }
+
+    #[test]
+    fn printed_output_is_chronological_unless_asked_otherwise() {
+        // Different from the interactive default, and deliberately: printed
+        // rows scroll, so the last one is the one left beside the prompt.
+        let sort = parse(&["daily"]).sort_order(crate::sort::Sort::OLDEST_FIRST);
+        assert_eq!(sort, crate::sort::Sort::OLDEST_FIRST);
+    }
+
+    #[test]
+    fn reverse_on_its_own_flips_whatever_the_default_was() {
+        // The short way to say "today first" without naming a column.
+        let sort = parse(&["daily", "--reverse"]).sort_order(crate::sort::Sort::OLDEST_FIRST);
+        assert_eq!(sort, crate::sort::Sort::NEWEST_FIRST);
+    }
+
+    #[test]
+    fn reverse_also_flips_an_explicit_column() {
+        let dearest =
+            parse(&["models", "--sort", "cost"]).sort_order(crate::sort::Sort::OLDEST_FIRST);
+        let cheapest = parse(&["models", "--sort", "cost", "--reverse"])
+            .sort_order(crate::sort::Sort::OLDEST_FIRST);
+        assert_eq!(dearest.key, crate::sort::Key::Cost);
+        assert!(dearest.descending);
+        assert!(!cheapest.descending);
+    }
+
+    #[test]
+    fn a_named_column_ignores_the_default_entirely() {
+        let sort =
+            parse(&["daily", "--sort", "tokens"]).sort_order(crate::sort::Sort::LARGEST_FIRST);
+        assert_eq!(sort.key, crate::sort::Key::Tokens);
+        assert!(sort.descending, "a quantity starts with the biggest");
+    }
+
+    #[test]
+    fn an_unknown_sort_column_is_refused_rather_than_ignored() {
+        use clap::Parser as _;
+        assert!(Cli::try_parse_from(["aum", "daily", "--sort", "vibes"]).is_err());
     }
 }

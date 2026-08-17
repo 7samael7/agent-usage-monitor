@@ -18,6 +18,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::context::Context;
+use crate::sort::{self, Labels, Sort};
 use data::Data;
 
 pub use data::Day;
@@ -86,6 +87,10 @@ pub struct App {
     pub help: bool,
     pub status: Option<String>,
     pub currency: &'static str,
+    /// Daily and hourly share one order: they are the same question at two
+    /// resolutions, and `h` swaps between them mid-thought.
+    pub bucket_sort: Sort,
+    pub model_sort: Sort,
     last_refresh: Instant,
 }
 
@@ -99,6 +104,31 @@ impl App {
             Tab::Models => self.data.models.len(),
             Tab::Sessions => self.data.sessions.len(),
         }
+    }
+
+    /// The order in force on the current tab, if it has one.
+    pub const fn sort(&self) -> Option<Sort> {
+        match self.tab {
+            Tab::Daily | Tab::Hourly => Some(self.bucket_sort),
+            Tab::Models => Some(self.model_sort),
+            _ => None,
+        }
+    }
+
+    /// Re-sort the current tab, and go back to the top of the new order.
+    ///
+    /// Returns what happened, or `None` on a tab with nothing to sort — the
+    /// caller says so rather than letting the key press vanish silently.
+    fn press_sort(&mut self, key: sort::Key) -> Option<Sort> {
+        let slot = match self.tab {
+            Tab::Daily | Tab::Hourly => &mut self.bucket_sort,
+            Tab::Models => &mut self.model_sort,
+            _ => return None,
+        };
+        *slot = slot.press(key);
+        let now = *slot;
+        self.selected = 0;
+        Some(now)
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -172,6 +202,8 @@ async fn event_loop(
         help: false,
         status: None,
         currency: ctx.currency_code(),
+        bucket_sort: Sort::NEWEST_FIRST,
+        model_sort: Sort::LARGEST_FIRST,
         last_refresh: Instant::now(),
     };
 
@@ -255,6 +287,12 @@ async fn handle_key(
             app.status = Some(format!("exported to {path}"));
         }
 
+        // Sorting. The same column again reverses it.
+        KeyCode::Char('d') => sorted(app, sort::Key::Label),
+        KeyCode::Char('n') => sorted(app, sort::Key::Requests),
+        KeyCode::Char('t') => sorted(app, sort::Key::Tokens),
+        KeyCode::Char('c') => sorted(app, sort::Key::Cost),
+
         KeyCode::Char('1') => app.tab = Tab::Overview,
         KeyCode::Char('2') => app.tab = Tab::Daily,
         KeyCode::Char('3') => app.tab = Tab::Hourly,
@@ -268,6 +306,22 @@ async fn handle_key(
     Ok(false)
 }
 
+/// Apply a sort key and say what it did.
+///
+/// On a tab with nothing to sort the press is reported rather than swallowed:
+/// a key that appears to do nothing is indistinguishable from a broken one.
+fn sorted(app: &mut App, key: sort::Key) {
+    let labels = if app.tab == Tab::Models {
+        Labels::Name
+    } else {
+        Labels::Time
+    };
+    app.status = Some(match app.press_sort(key) {
+        Some(sort) => sort.describe(labels).to_owned(),
+        None => format!("nothing to sort on {}", app.tab.title()),
+    });
+}
+
 /// Write the current view to a JSON file beside the working directory.
 ///
 /// Metadata only — the same figures the tables show. There is no prompt or
@@ -278,9 +332,24 @@ fn export(app: &App) -> anyhow::Result<String> {
         app.tab.title().to_lowercase(),
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     );
+    // Written in the order shown, and saying which order that was: a file whose
+    // rows are shuffled relative to the screen it came from is a small lie about
+    // what was exported.
+    let mut daily = sort::join(&app.data.daily, &app.data.daily_cost);
+    sort::apply(&mut daily, app.bucket_sort);
+    let mut models = sort::join_models(&app.data.models, &app.data.model_cost, "(not reported)");
+    sort::apply(&mut models, app.model_sort);
+
     let body = serde_json::json!({
         "range": app.data.label,
         "exported_at": chrono::Local::now().to_rfc3339(),
+        "order": {
+            "daily": app.bucket_sort.describe(Labels::Time),
+            "models": app.model_sort.describe(Labels::Name),
+            "shown": app.sort().map(|s| s.describe(
+                if app.tab == Tab::Models { Labels::Name } else { Labels::Time },
+            )),
+        },
         "totals": {
             "requests": app.data.totals.requests,
             "failed": app.data.failed,
@@ -289,11 +358,11 @@ fn export(app: &App) -> anyhow::Result<String> {
             "output": app.data.totals.output_total,
             "reasoning": app.data.totals.reasoning,
         },
-        "daily": app.data.daily.iter().map(|(at, t)| serde_json::json!({
-            "at": at, "requests": t.requests, "tokens": t.grand_total(),
+        "daily": daily.iter().map(|r| serde_json::json!({
+            "at": r.label, "requests": r.totals.requests, "tokens": r.totals.grand_total(),
         })).collect::<Vec<_>>(),
-        "models": app.data.models.iter().map(|(m, t)| serde_json::json!({
-            "model": m, "requests": t.requests, "tokens": t.grand_total(),
+        "models": models.iter().map(|r| serde_json::json!({
+            "model": r.label, "requests": r.totals.requests, "tokens": r.totals.grand_total(),
         })).collect::<Vec<_>>(),
         "note": "Metadata only. Prompt and response text are never recorded by this tool.",
     });

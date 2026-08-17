@@ -17,10 +17,15 @@ use ratatui::widgets::{
 use super::heatmap;
 use super::{App, Tab};
 use crate::fmt;
+use crate::sort::Key as SortKey;
 
 const ACCENT: Color = Color::Indexed(110);
 const MUTED: Color = Color::Indexed(244);
 const FAINT: Color = Color::Indexed(240);
+
+/// What a model with no reported id is called, in one place: the Overview and
+/// Models tables have to agree, and the sorter needs the same string.
+const NOT_REPORTED: &str = "(not reported)";
 
 const fn kind_colour(kind: DisplayKind) -> Color {
     match kind {
@@ -217,7 +222,7 @@ fn overview(frame: &mut Frame, area: Rect, app: &App) {
             })
         });
         table_rows.push(Row::new(vec![
-            Cell::from(model.clone().unwrap_or_else(|| "(not reported)".to_owned())),
+            Cell::from(model.clone().unwrap_or_else(|| NOT_REPORTED.to_owned())),
             Cell::from(fmt::thousands(totals.requests)).style(Style::default().fg(MUTED)),
             Cell::from(fmt::thousands(totals.grand_total())),
             Cell::from(Line::from(money_span(&cost, app.currency)).alignment(Alignment::Right)),
@@ -245,6 +250,22 @@ fn stat_line(label: &str, value: &str) -> Line<'static> {
         Span::styled(format!("  {label:<16}"), Style::default().fg(MUTED)),
         Span::raw(value.to_owned()),
     ])
+}
+
+/// A header where the sorted column carries its direction.
+///
+/// The marker is on the column rather than only in the title, because the
+/// question "sorted by what?" is asked while looking at the columns.
+fn sorted_header(cells: &[(&str, Option<SortKey>)], sort: crate::sort::Sort) -> Row<'static> {
+    let labelled: Vec<String> = cells
+        .iter()
+        .map(|(name, key)| match key {
+            Some(k) => format!("{name}{}", sort.marker(*k)),
+            None => (*name).to_owned(),
+        })
+        .collect();
+    Row::new(labelled.into_iter().map(Cell::from).collect::<Vec<_>>())
+        .style(Style::default().fg(FAINT).add_modifier(Modifier::BOLD))
 }
 
 fn header_row(cells: &[&str]) -> Row<'static> {
@@ -346,31 +367,35 @@ fn buckets(frame: &mut Frame, area: Rect, app: &App, hourly: bool) {
         daily_chart(frame, split[0], app, "Tokens per day");
     }
 
-    let rows: Vec<Row> = series
+    // The chart above stays in time order whatever the table does: a bar chart
+    // with the days shuffled is not a smaller truth, it is a different chart.
+    let sort = app.bucket_sort;
+    let mut ordered = crate::sort::join(series, costs);
+    crate::sort::apply(&mut ordered, sort);
+
+    let unmeasured = Measured::unavailable(aum_contract::UnavailableReason::NoTelemetry {
+        detail: "no usage".to_owned(),
+    });
+
+    let rows: Vec<Row> = ordered
         .iter()
         .enumerate()
-        .map(|(i, (at, t))| {
-            let cost = costs
-                .iter()
-                .find(|(a, _)| a == at)
-                .map(|(_, m)| m.clone())
-                .unwrap_or_else(|| {
-                    Measured::unavailable(aum_contract::UnavailableReason::NoTelemetry {
-                        detail: "no usage".to_owned(),
-                    })
-                });
-            let style = if i == app.selected.min(series.len().saturating_sub(1)) {
+        .map(|(i, r)| {
+            let style = if i == app.selected.min(ordered.len().saturating_sub(1)) {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else {
                 Style::default()
             };
             Row::new(vec![
-                Cell::from(at.replace('T', " ")),
-                Cell::from(fmt::thousands(t.requests)),
-                Cell::from(fmt::thousands(t.input_side())),
-                Cell::from(fmt::thousands(t.output_total)),
-                Cell::from(fmt::thousands(t.grand_total())),
-                Cell::from(Line::from(money_span(&cost, app.currency)).alignment(Alignment::Right)),
+                Cell::from(r.label.replace('T', " ")),
+                Cell::from(fmt::thousands(r.totals.requests)),
+                Cell::from(fmt::thousands(r.totals.input_side())),
+                Cell::from(fmt::thousands(r.totals.output_total)),
+                Cell::from(fmt::thousands(r.totals.grand_total())),
+                Cell::from(
+                    Line::from(money_span(r.cost.unwrap_or(&unmeasured), app.currency))
+                        .alignment(Alignment::Right),
+                ),
             ])
             .style(style)
         })
@@ -388,15 +413,23 @@ fn buckets(frame: &mut Frame, area: Rect, app: &App, hourly: bool) {
                 Constraint::Length(14),
             ],
         )
-        .header(header_row(&[
-            if hourly { "hour" } else { "day" },
-            "requests",
-            "input",
-            "output",
-            "tokens",
-            "cost",
-        ]))
-        .block(block(title)),
+        .header(sorted_header(
+            &[
+                (if hourly { "hour" } else { "day" }, Some(SortKey::Label)),
+                ("requests", Some(SortKey::Requests)),
+                // `input` and `output` are parts of the quantity `tokens`
+                // sorts on, so they carry no marker of their own.
+                ("input", None),
+                ("output", None),
+                ("tokens", Some(SortKey::Tokens)),
+                ("cost", Some(SortKey::Cost)),
+            ],
+            sort,
+        ))
+        .block(block(&format!(
+            "{title} — {}",
+            sort.describe(crate::sort::Labels::Time)
+        ))),
         split[1],
     );
 }
@@ -461,29 +494,34 @@ fn models(frame: &mut Frame, area: Rect, app: &App) {
         ])
         .split(area);
 
-    let rows: Vec<Row> = app
-        .data
-        .models
+    let sort = app.model_sort;
+    let mut ordered =
+        crate::sort::join_models(&app.data.models, &app.data.model_cost, NOT_REPORTED);
+    crate::sort::apply(&mut ordered, sort);
+
+    let uncosted = Measured::unavailable(aum_contract::UnavailableReason::NoTelemetry {
+        detail: "not costed".to_owned(),
+    });
+
+    let rows: Vec<Row> = ordered
         .iter()
         .enumerate()
-        .map(|(i, (model, totals))| {
-            let cost = app.data.model_cost.get(i).cloned().unwrap_or_else(|| {
-                Measured::unavailable(aum_contract::UnavailableReason::NoTelemetry {
-                    detail: "not costed".to_owned(),
-                })
-            });
-            let reasoning = super::super::report::reasoning_measure(totals);
-            let style = if i == app.selected.min(app.data.models.len().saturating_sub(1)) {
+        .map(|(i, r)| {
+            let reasoning = super::super::report::reasoning_measure(r.totals);
+            let style = if i == app.selected.min(ordered.len().saturating_sub(1)) {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else {
                 Style::default()
             };
             Row::new(vec![
-                Cell::from(model.clone().unwrap_or_else(|| "(not reported)".to_owned())),
-                Cell::from(fmt::thousands(totals.requests)),
-                Cell::from(fmt::thousands(totals.grand_total())),
+                Cell::from(r.label.to_owned()),
+                Cell::from(fmt::thousands(r.totals.requests)),
+                Cell::from(fmt::thousands(r.totals.grand_total())),
                 Cell::from(Line::from(tokens_span(&reasoning)).alignment(Alignment::Right)),
-                Cell::from(Line::from(money_span(&cost, app.currency)).alignment(Alignment::Right)),
+                Cell::from(
+                    Line::from(money_span(r.cost.unwrap_or(&uncosted), app.currency))
+                        .alignment(Alignment::Right),
+                ),
             ])
             .style(style)
         })
@@ -501,15 +539,21 @@ fn models(frame: &mut Frame, area: Rect, app: &App) {
                 Constraint::Min(0),
             ],
         )
-        .header(header_row(&[
-            "model",
-            "requests",
-            "tokens",
-            "reasoning",
-            "cost",
-            "",
-        ]))
-        .block(block("Models")),
+        .header(sorted_header(
+            &[
+                ("model", Some(SortKey::Label)),
+                ("requests", Some(SortKey::Requests)),
+                ("tokens", Some(SortKey::Tokens)),
+                ("reasoning", None),
+                ("cost", Some(SortKey::Cost)),
+                ("", None),
+            ],
+            sort,
+        ))
+        .block(block(&format!(
+            "Models — {}",
+            sort.describe(crate::sort::Labels::Name)
+        ))),
         split[0],
     );
 
@@ -762,7 +806,7 @@ fn apps(frame: &mut Frame, area: Rect, app: &App) {
 
 fn help(frame: &mut Frame, area: Rect) {
     let width = 62.min(area.width.saturating_sub(4));
-    let height = 16.min(area.height.saturating_sub(2));
+    let height = 22.min(area.height.saturating_sub(2));
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
@@ -781,6 +825,19 @@ fn help(frame: &mut Frame, area: Rect) {
         key_line("e", "export this view as JSON"),
         key_line("?", "this help"),
         key_line("q  Esc", "quit"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Sorting — daily, hourly and models",
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        )),
+        key_line("d", "by date, or by model name"),
+        key_line("n", "by number of requests"),
+        key_line("t", "by tokens"),
+        key_line("c", "by cost — unpriced rows stay last"),
+        Line::from(Span::styled(
+            "  The same key again reverses it. The chart stays in time order.",
+            Style::default().fg(FAINT),
+        )),
         Line::from(""),
         Line::from(Span::styled(
             "  Numbers refresh every two seconds on their own.",
