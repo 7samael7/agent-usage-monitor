@@ -428,9 +428,13 @@ line `actually billed — subscription, not billed per token`, and no total anyw
 Prices are versioned and **append-only**. A price edit creates a new version and closes the previous
 one, so usage recorded in March still displays March's rates; recalculation is an explicit action. An
 unknown model yields `Unavailable { NoPricingForModel }` and a footer saying how many models lack a rate
-and that `aum price` sets one — never a substituted "similar" model's rate. This matters immediately:
-`claude-opus-5`, `claude-fable-5` and `gpt-5.6-sol` all appear in the real corpus and in no public price
-list.
+and that `aum price` sets one — never a substituted "similar" model's rate.
+
+Rates for the models these agents currently run are seeded into the binary, each carrying the page and
+date it was read from, so a machine with an empty database still prices its history. A rate entered
+with `aum price` lives only in that machine's database and beats the seed for the same model. The
+distinction is worth stating because it is invisible until it bites: identical binaries on two machines
+agree, but a machine with an *older* binary prices only what its seed knew about.
 
 Money is `rust_decimal::Decimal` in process, integer nano-USD at rest, and a **decimal string** when
 serialised — a JSON number would be silently mangled by any consumer that parses it as a float, and

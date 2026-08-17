@@ -101,6 +101,7 @@ pub async fn load_table(db: &Database) -> Result<PriceTable, aum_db::DbError> {
             rates: to_rates(&row),
             effective_from: row.effective_from.clone(),
             source: row.source.clone(),
+            note: row.note.clone(),
         });
     }
     Ok(table)
@@ -144,6 +145,7 @@ pub async fn save_price(
         rates: rates.clone(),
         effective_from,
         source: row.source,
+        note: row.note,
     })
 }
 
@@ -331,19 +333,46 @@ mod tests {
 
     #[tokio::test]
     async fn a_price_the_user_enters_becomes_usable_immediately() {
-        // The whole point: claude-opus-5 has no published rate, so without this
-        // it can never be costed at all.
-        let db = db().await;
-        assert!(!load_table(&db).await.unwrap().has_price("claude-opus-5"));
+        // A model the seed has never heard of — which is the case that matters,
+        // because a new one appears every few weeks and is unpriceable until
+        // somebody types a rate in. Deliberately not a real model id: this is
+        // about the mechanism, and naming a shipped one would make the test
+        // fail the day that model gets seeded.
+        const UNSEEDED: &str = "not-a-real-model-2027";
 
-        save_price(&db, "claude-opus-5", &rates("15.00", "75.00"), None)
+        let db = db().await;
+        assert!(!load_table(&db).await.unwrap().has_price(UNSEEDED));
+
+        save_price(&db, UNSEEDED, &rates("15.00", "75.00"), None)
             .await
             .unwrap();
 
         let table = load_table(&db).await.unwrap();
-        let found = table.lookup("claude-opus-5").unwrap();
+        let found = table.lookup(UNSEEDED).unwrap();
         assert_eq!(found.rates.input_per_mtok, Decimal::from_str("15").unwrap());
         assert_eq!(found.source, "user");
+    }
+
+    #[tokio::test]
+    async fn a_fresh_machine_can_price_the_models_these_agents_run() {
+        // The bug this covers: the rates lived only in the database of the
+        // machine they were typed on, so the same binary on a second machine
+        // showed "not priced" for everything. The seed ships in the binary;
+        // the database does not travel.
+        let db = db().await;
+        let table = load_table(&db).await.unwrap();
+        for model in [
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-sonnet-5",
+            "gpt-5.6-terra",
+            "gpt-5.5",
+        ] {
+            assert!(
+                table.has_price(model),
+                "{model} is unpriced on a machine with an empty database"
+            );
+        }
     }
 
     #[tokio::test]

@@ -49,10 +49,25 @@ produce a confident total wrong by an unknown factor.
 
 **Defaulting an unknown model to zero.** A model with no entry yields
 `Unavailable` with the model name and a prompt to enter a rate. This is not
-hypothetical: every model a current machine actually runs — `claude-opus-5`,
-`claude-fable-5`, `gpt-5.6-sol`, `gpt-5.6-terra` — postdates every published
-price list. Defaulting them to zero would show the heaviest sessions on the
-machine as free.
+hypothetical: a new model appears every few weeks, and for a while it postdates
+every price list anyone has read. Defaulting those to zero would show the
+heaviest sessions on the machine as free — and they are usually the heaviest
+precisely because the model is new.
+
+## Where a rate comes from
+
+Two places, and a rate says which:
+
+- **the seed**, `crates/aum-pricing/seed/models.json`, compiled into the binary.
+  Every entry carries the page it was read from and the day it was read. This is
+  why a fresh install prices its history without being told anything.
+- **the local database**, from `aum price`. It does not travel between machines,
+  which is worth knowing before wondering why a second machine shows
+  `not priced`: either it has an older build, or the model is newer than it.
+
+A rate you entered beats a seeded one for the same model, always. Seeded rates go
+stale — providers change prices, and nothing here fetches an update — so the
+entry is the correction mechanism rather than an edge case.
 
 **Pricing tokens the provider did not classify.** Codex's compaction calls
 report a total with no input/output split. Those tokens are counted and priced

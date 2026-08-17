@@ -196,7 +196,8 @@ async fn set_price(
     let saved = aum_engine::prices::save_price(&ctx.db, model, &rates, note).await?;
     println!(
         "recorded {model}: ${} in / ${} out per million tokens",
-        saved.rates.input_per_mtok, saved.rates.output_per_mtok
+        fmt::rate(saved.rates.input_per_mtok),
+        fmt::rate(saved.rates.output_per_mtok)
     );
     println!("this is a new version — anything already costed keeps the rate it was costed with");
     Ok(())

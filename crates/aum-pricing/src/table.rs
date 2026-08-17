@@ -38,6 +38,10 @@ pub struct ModelPricing {
     /// `seed`, `user` or `updater`. A user's own entry wins ties, because
     /// someone who has typed in a rate knows something we do not.
     pub source: String,
+    /// Where the figure came from. Published rates change, and a number with no
+    /// provenance cannot be checked against the page it was copied from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Prices, looked up by model.
@@ -136,6 +140,7 @@ mod tests {
             rates: rates(input),
             effective_from: from.to_owned(),
             source: source.to_owned(),
+            note: None,
         }
     }
 
@@ -203,21 +208,74 @@ mod tests {
     }
 
     #[test]
-    fn the_seed_table_does_not_invent_prices_for_this_machines_models() {
-        // These four appear in real data here and in no public price list. The
-        // honest state is "unavailable", not a plausible-looking number.
-        let seed = PriceTable::seed();
-        for unknown in [
-            "claude-opus-5",
-            "claude-fable-5",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-        ] {
+    fn every_seeded_rate_says_where_it_came_from() {
+        // The seed is the one place this application states a number nobody on
+        // this machine typed in. An earlier version of this test asserted the
+        // opposite — that the seed must *not* price the models in use here,
+        // because at the time their rates were not published anywhere. They are
+        // now, so the rule that replaces it is the one that was always the
+        // point: a seeded price carries the page it was read from and the day
+        // it was read, or it does not belong in the file.
+        for entry in PriceTable::seed().models() {
+            let note = entry.note.as_deref().unwrap_or_default();
             assert!(
-                !seed.has_price(unknown),
-                "{unknown} has no published price; the seed must not invent one"
+                note.contains("claude.com") || note.contains("openai.com"),
+                "{}: a seeded price needs its source, got {note:?}",
+                entry.model_id
+            );
+            assert!(
+                note.contains("checked"),
+                "{}: and the date it was checked, got {note:?}",
+                entry.model_id
             );
         }
+    }
+
+    #[test]
+    fn no_seeded_rate_is_zero_or_upside_down() {
+        // Two copy-paste failures that produce confident, wrong totals: a cache
+        // read priced at zero (understates a long session by most of its cost)
+        // and input/output transposed (understates every heavy generation).
+        for entry in PriceTable::seed().models() {
+            let r = &entry.rates;
+            for (what, rate) in [
+                ("input", r.input_per_mtok),
+                ("output", r.output_per_mtok),
+                ("cache read", r.cache_read_per_mtok),
+                ("5m cache write", r.cache_write_5m_per_mtok),
+                ("1h cache write", r.cache_write_1h_per_mtok),
+            ] {
+                assert!(
+                    rate > Decimal::ZERO,
+                    "{}: {what} priced at {rate}",
+                    entry.model_id
+                );
+            }
+            assert!(
+                r.output_per_mtok > r.input_per_mtok,
+                "{}: output ({}) should cost more than input ({}) — transposed?",
+                entry.model_id,
+                r.output_per_mtok,
+                r.input_per_mtok
+            );
+            assert!(
+                r.cache_read_per_mtok < r.input_per_mtok,
+                "{}: a cache read should be cheaper than fresh input",
+                entry.model_id
+            );
+        }
+    }
+
+    #[test]
+    fn the_seed_holds_one_price_per_model() {
+        // Two entries for the same model would both be "current", and which one
+        // won would depend on the order they happened to be written in.
+        let seed = PriceTable::seed();
+        let mut ids: Vec<&str> = seed.models().iter().map(|e| e.model_id.as_str()).collect();
+        let before = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "a model is seeded twice");
     }
 
     #[test]

@@ -454,7 +454,8 @@ fn model_table(ctx: &Context, rows: &[crate::sort::Row<'_>], limit: usize) -> St
             |p| {
                 format!(
                     "${} in / ${} out",
-                    p.rates.input_per_mtok, p.rates.output_per_mtok
+                    fmt::rate(p.rates.input_per_mtok),
+                    fmt::rate(p.rates.output_per_mtok)
                 )
             },
         );

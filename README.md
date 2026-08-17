@@ -95,12 +95,17 @@ aum daily --reverse                 # today first
 aum models --sort cost              # where the money went
 ```
 
-Prices ship for the models these agents use, and can be overridden:
+Rates for the models these agents currently run are compiled into the binary, with the page and date
+each was read from, so a fresh install prices its history straight away. A model published after your
+build shows `— not priced` rather than a guess; enter its rate and yours wins from then on:
 
 ```bash
-aum price gpt-5.6-terra --input 2.00 --output 12.00 --cache-read 0.20
+aum price gpt-5.7 --input 2.00 --output 12.00 --cache-read 0.20 --note "openai pricing, checked today"
 aum fx EUR 0.92
 ```
+
+Rates you enter live in the local database, which does not travel between machines — the seeded ones
+do. If a second machine shows `not priced`, it is running an older build.
 
 ## What it measures, and how honestly
 

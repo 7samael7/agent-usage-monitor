@@ -18,6 +18,23 @@
 
 use aum_contract::{DisplayKind, Measured, Money};
 
+/// A published rate, at two decimals or more.
+///
+/// The same rate arrives with different scales depending on where it was
+/// loaded from — a seeded `"5.00"` keeps its scale, while one read back from
+/// the database is normalized to `5` — and a column that shows `$5` on one
+/// machine and `$5.00` on another invites the reading that they differ. Extra
+/// decimals are never dropped: `$0.075` is a real rate and rounding it to
+/// `$0.08` would overstate every cache read.
+#[must_use]
+pub fn rate(value: rust_decimal::Decimal) -> String {
+    let mut value = value;
+    if value.scale() < 2 {
+        value.rescale(2);
+    }
+    value.to_string()
+}
+
 /// Thousands separators, because a nine-digit token count is unreadable without.
 #[must_use]
 pub fn thousands(n: i64) -> String {

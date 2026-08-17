@@ -1,16 +1,17 @@
 [
   {
-    "version_id": "seed-claude-sonnet-4-5-2025-10",
-    "model_id": "claude-sonnet-4-5-20250929",
+    "version_id": "seed-claude-fable-5-2026-08",
+    "model_id": "claude-fable-5",
     "rates": {
-      "input_per_mtok": "3.00",
-      "output_per_mtok": "15.00",
-      "cache_read_per_mtok": "0.30",
-      "cache_write_5m_per_mtok": "3.75",
-      "cache_write_1h_per_mtok": "6.00"
+      "input_per_mtok": "10.00",
+      "output_per_mtok": "50.00",
+      "cache_read_per_mtok": "1.00",
+      "cache_write_5m_per_mtok": "12.50",
+      "cache_write_1h_per_mtok": "20.00"
     },
-    "effective_from": "2025-10-01T00:00:00.000Z",
-    "source": "seed"
+    "effective_from": "2026-08-13T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
   },
   {
     "version_id": "seed-claude-haiku-4-5-2025-10",
@@ -23,7 +24,8 @@
       "cache_write_1h_per_mtok": "2.00"
     },
     "effective_from": "2025-10-01T00:00:00.000Z",
-    "source": "seed"
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
   },
   {
     "version_id": "seed-claude-opus-4-1-2025-08",
@@ -36,6 +38,133 @@
       "cache_write_1h_per_mtok": "30.00"
     },
     "effective_from": "2025-08-05T00:00:00.000Z",
-    "source": "seed"
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17; retired except on Bedrock and Google Cloud"
+  },
+  {
+    "version_id": "seed-claude-opus-4-8-2026-08",
+    "model_id": "claude-opus-4-8",
+    "rates": {
+      "input_per_mtok": "5.00",
+      "output_per_mtok": "25.00",
+      "cache_read_per_mtok": "0.50",
+      "cache_write_5m_per_mtok": "6.25",
+      "cache_write_1h_per_mtok": "10.00"
+    },
+    "effective_from": "2026-08-13T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+  },
+  {
+    "version_id": "seed-claude-opus-5-2026-08",
+    "model_id": "claude-opus-5",
+    "rates": {
+      "input_per_mtok": "5.00",
+      "output_per_mtok": "25.00",
+      "cache_read_per_mtok": "0.50",
+      "cache_write_5m_per_mtok": "6.25",
+      "cache_write_1h_per_mtok": "10.00"
+    },
+    "effective_from": "2026-08-13T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+  },
+  {
+    "version_id": "seed-claude-sonnet-4-5-2025-10",
+    "model_id": "claude-sonnet-4-5-20250929",
+    "rates": {
+      "input_per_mtok": "3.00",
+      "output_per_mtok": "15.00",
+      "cache_read_per_mtok": "0.30",
+      "cache_write_5m_per_mtok": "3.75",
+      "cache_write_1h_per_mtok": "6.00"
+    },
+    "effective_from": "2025-10-01T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+  },
+  {
+    "version_id": "seed-claude-sonnet-5-2026-08",
+    "model_id": "claude-sonnet-5",
+    "rates": {
+      "input_per_mtok": "2.00",
+      "output_per_mtok": "10.00",
+      "cache_read_per_mtok": "0.20",
+      "cache_write_5m_per_mtok": "2.50",
+      "cache_write_1h_per_mtok": "4.00"
+    },
+    "effective_from": "2026-08-13T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+  },
+  {
+    "version_id": "seed-gpt-5.4-2026-08",
+    "model_id": "gpt-5.4",
+    "rates": {
+      "input_per_mtok": "2.50",
+      "output_per_mtok": "15.00",
+      "cache_read_per_mtok": "0.25",
+      "cache_write_5m_per_mtok": "2.50",
+      "cache_write_1h_per_mtok": "2.50"
+    },
+    "effective_from": "2026-08-13T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-5.4-mini-2026-08",
+    "model_id": "gpt-5.4-mini",
+    "rates": {
+      "input_per_mtok": "0.75",
+      "output_per_mtok": "4.50",
+      "cache_read_per_mtok": "0.075",
+      "cache_write_5m_per_mtok": "0.75",
+      "cache_write_1h_per_mtok": "0.75"
+    },
+    "effective_from": "2026-08-13T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17"
+  },
+  {
+    "version_id": "seed-gpt-5.5-2026-08",
+    "model_id": "gpt-5.5",
+    "rates": {
+      "input_per_mtok": "5.00",
+      "output_per_mtok": "30.00",
+      "cache_read_per_mtok": "0.50",
+      "cache_write_5m_per_mtok": "5.00",
+      "cache_write_1h_per_mtok": "5.00"
+    },
+    "effective_from": "2026-08-13T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-5.6-sol-2026-08",
+    "model_id": "gpt-5.6-sol",
+    "rates": {
+      "input_per_mtok": "5.00",
+      "output_per_mtok": "30.00",
+      "cache_read_per_mtok": "0.50",
+      "cache_write_5m_per_mtok": "5.00",
+      "cache_write_1h_per_mtok": "5.00"
+    },
+    "effective_from": "2026-08-13T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17"
+  },
+  {
+    "version_id": "seed-gpt-5.6-terra-2026-08",
+    "model_id": "gpt-5.6-terra",
+    "rates": {
+      "input_per_mtok": "2.00",
+      "output_per_mtok": "12.00",
+      "cache_read_per_mtok": "0.20",
+      "cache_write_5m_per_mtok": "2.00",
+      "cache_write_1h_per_mtok": "2.00"
+    },
+    "effective_from": "2026-08-13T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17"
   }
 ]

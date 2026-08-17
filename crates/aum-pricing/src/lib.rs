@@ -207,6 +207,7 @@ mod tests {
                 },
                 effective_from: "2026-01-01T00:00:00.000Z".to_owned(),
                 source: "seed".to_owned(),
+                note: None,
             },
             ModelPricing {
                 version_id: "gpt-test".to_owned(),
@@ -220,6 +221,7 @@ mod tests {
                 },
                 effective_from: "2026-01-01T00:00:00.000Z".to_owned(),
                 source: "seed".to_owned(),
+                note: None,
             },
         ])
     }
