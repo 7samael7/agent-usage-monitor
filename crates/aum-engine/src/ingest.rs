@@ -55,6 +55,20 @@ impl WatchRoot {
         }
     }
 
+    /// Copilot's OpenTelemetry file export.
+    ///
+    /// Empty on a machine that has not turned the exporter on, which is the
+    /// default — see `aum_adapters::copilot::ENABLE_HINT`. A watch root that
+    /// does not exist costs one failed `read_dir` per pass.
+    #[must_use]
+    pub fn copilot(home: &Path) -> Self {
+        Self {
+            directory: home.join(".copilot").join("otel"),
+            extension: "jsonl",
+            file_prefix: None,
+        }
+    }
+
     #[must_use]
     pub fn codex(home: &Path) -> Self {
         Self {

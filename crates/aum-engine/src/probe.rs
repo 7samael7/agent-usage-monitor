@@ -232,7 +232,7 @@ pub fn describe_file_adapter(
         notes.push(format!(
             "{display_name} was not found. Nothing can be measured until it has run at least once."
         ));
-        return finish(
+        return descriptor(
             adapter_id,
             display_name,
             AdapterState::NotInstalled,
@@ -255,7 +255,7 @@ pub fn describe_file_adapter(
             "{display_name} is installed but has produced no usage the monitor can read yet. \
              Run it once and this will fill in."
         ));
-        return finish(
+        return descriptor(
             adapter_id,
             display_name,
             AdapterState::Detected,
@@ -383,7 +383,7 @@ pub fn describe_file_adapter(
         );
     }
 
-    finish(
+    descriptor(
         adapter_id,
         display_name,
         AdapterState::Ready,
@@ -460,7 +460,7 @@ pub fn describe_claude_desktop(
             .to_owned(),
     );
 
-    let mut descriptor = finish(
+    let mut built = descriptor(
         "claude_desktop",
         "Claude Desktop",
         if installed {
@@ -472,7 +472,84 @@ pub fn describe_claude_desktop(
         capabilities,
         notes,
     );
-    descriptor.daily_total = daily;
+    built.daily_total = daily;
+    built
+}
+
+/// GitHub Copilot: measurable, but only once its exporter is switched on.
+///
+/// The interesting case in this whole file. Copilot writes plenty to disk and
+/// none of it counts tokens, *unless* the OpenTelemetry file exporter is
+/// enabled — at which point per-request counts appear and are as exact as any
+/// other provider-reported figure.
+///
+/// So "unsupported" here would be wrong twice over: wrong because it may
+/// become supported at any time, and useless because it does not say how. The
+/// reason carries the three environment variables instead.
+#[must_use]
+pub fn describe_copilot(home: &Path, result: &Observed2) -> AdapterDescriptor {
+    use aum_adapters::copilot::ENABLE_HINT;
+
+    let installed =
+        home.join(".copilot").is_dir() || home.join(".config").join("github-copilot").is_dir();
+    let exporting = result.observed.usage_rows > 0;
+
+    // Once there is real data, the evidence-driven matrix is the right answer
+    // and says exactly what the sample showed.
+    let mut descriptor = describe_file_adapter(
+        "copilot",
+        "GitHub Copilot",
+        result,
+        crate::views::discover_executable("copilot").map(|p| p.display().to_string()),
+        installed,
+    );
+
+    if exporting {
+        // Unlike the transcript adapters, an OTLP span is a span: it carries
+        // its own start and end. The shared message — "the files contain no
+        // latency information" — is simply untrue here, and inheriting it
+        // would be a claim about someone else's software that is wrong.
+        for (name, state) in &mut descriptor.capabilities {
+            if name == "per_request_latency" {
+                *state = CapabilityState::Degraded {
+                    evidence: "each chat span carries startTimeUnixNano and endTimeUnixNano"
+                        .to_owned(),
+                    caveat: "The duration is in the export, but this tool does not record it and \
+                             shows no latency anywhere. Available in the source, not measured here."
+                        .to_owned(),
+                };
+            }
+        }
+    }
+
+    if !exporting {
+        for (name, state) in &mut descriptor.capabilities {
+            // Latency and billed cost are absent for their own reasons, which
+            // the shared matrix already states correctly.
+            if matches!(name.as_str(), "per_request_latency" | "actual_billed_cost") {
+                continue;
+            }
+            *state = CapabilityState::Unsupported {
+                reason: ENABLE_HINT.to_owned(),
+            };
+        }
+        descriptor.notes = vec![
+            if installed {
+                "Detected, and reporting nothing. Copilot's own files — the JetBrains session \
+                 transcripts, the process logs, the editor state databases — contain no token \
+                 counts at all."
+            } else {
+                "Not found on this machine."
+            }
+            .to_owned(),
+            // The hint itself is on the capabilities above; repeating it here
+            // would print the same paragraph twice on one screen.
+            "Its OpenTelemetry export is the only local source of Copilot token counts, and it \
+             is off by default. Nothing here can reconstruct what earlier sessions cost."
+                .to_owned(),
+        ];
+    }
+
     descriptor
 }
 
@@ -507,7 +584,9 @@ pub fn daily_total_from(rows: &[aum_db::desktop::DailyRow]) -> Option<aum_contra
     })
 }
 
-fn finish(
+/// Assemble a descriptor. Shared with `agents`, which describes the
+/// applications that write no measurements at all.
+pub fn descriptor(
     id: &str,
     display_name: &str,
     state: AdapterState,

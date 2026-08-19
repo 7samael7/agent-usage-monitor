@@ -41,6 +41,22 @@ Even Codex's own figure is a floor: on the corpus this was written against,
 21,408 of 21,611 Codex requests carried a reasoning count. The 203 that did not
 are the reason the number keeps its `≥`.
 
+## Copilot, when it is measurable at all
+
+With its OpenTelemetry export on, Copilot's counts are provider-reported and
+compare directly with the other two. Two caveats belong beside any such
+comparison:
+
+- **The history is not comparable in length.** Copilot recorded nothing before
+  the export was enabled, so its totals start from that moment while the others
+  go back as far as their transcripts. A side-by-side of all-time figures
+  compares a few days against a few months.
+- **Its cache accounting has one bucket, not three.** Copilot reports a cache
+  write with no TTL, so it lands in the unspecified bucket and is priced at the
+  cheaper tier — a floor. Claude Code splits 5-minute from 1-hour writes, which
+  price roughly 1.25× and 2× the input rate, and that split is most of what a
+  long Claude session costs.
+
 ## What is deliberately not offered
 
 **Latency and tokens per second.** The tempting substitute is the gap between

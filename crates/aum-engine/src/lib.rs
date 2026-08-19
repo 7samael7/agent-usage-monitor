@@ -3,6 +3,7 @@
 //! Ties the pieces together: adapters produce signals, storage records them,
 //! and this crate decides what a task currently looks like.
 
+pub mod agents;
 pub mod desktop;
 pub mod ingest;
 pub mod prices;
@@ -16,6 +17,7 @@ use std::time::Duration;
 use aum_adapters::UsageAdapter;
 use aum_adapters::claude_code::ClaudeCodeAdapter;
 use aum_adapters::codex::CodexAdapter;
+use aum_adapters::copilot::CopilotAdapter;
 use aum_db::Database;
 use tokio::sync::RwLock;
 
@@ -70,14 +72,26 @@ impl Engine {
     pub fn new(db: Database, home: &std::path::Path) -> Self {
         Self {
             db,
-            adapters: vec![Box::new(ClaudeCodeAdapter), Box::new(CodexAdapter)],
-            roots: vec![WatchRoot::claude_code(home), WatchRoot::codex(home)],
+            adapters: vec![
+                Box::new(ClaudeCodeAdapter),
+                Box::new(CodexAdapter),
+                Box::new(CopilotAdapter),
+            ],
+            roots: vec![
+                WatchRoot::claude_code(home),
+                WatchRoot::codex(home),
+                WatchRoot::copilot(home),
+            ],
             home: home.to_path_buf(),
             state: Arc::new(RwLock::new(IngestState {
                 backfilling: true,
                 ..Default::default()
             })),
-            caches: tokio::sync::Mutex::new(vec![ScanCache::new(), ScanCache::new()]),
+            // One cache per root, and the count must track `roots` above:
+            // a missing entry silently stops that adapter being scanned.
+            caches: tokio::sync::Mutex::new(
+                std::iter::repeat_with(ScanCache::new).take(3).collect(),
+            ),
             wake: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -223,6 +237,23 @@ impl PassStats {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    /// Every watch root needs its own adapter and its own scan cache: `pass`
+    /// zips them together, so a short list silently stops the last adapter
+    /// being scanned at all — no error, just an agent that never reports.
+    #[tokio::test]
+    async fn every_watch_root_has_an_adapter_and_a_cache() {
+        let db = aum_db::open_in_memory().await.unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let engine = Engine::new(db, home.path());
+
+        assert_eq!(engine.adapters.len(), engine.roots.len());
+        assert_eq!(engine.caches.lock().await.len(), engine.roots.len());
+        assert!(
+            engine.roots.iter().any(|r| r.directory.ends_with("otel")),
+            "Copilot's export directory should be watched"
+        );
+    }
 
     #[tokio::test]
     async fn an_engine_over_an_empty_home_does_nothing_and_does_not_fail() {

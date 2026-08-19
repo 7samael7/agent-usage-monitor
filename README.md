@@ -1,8 +1,8 @@
 # agent-usage-monitor
 
 A private, local-first terminal application that measures, records and prices the AI token usage
-produced by coding agents running on your own machine — Claude Code and Codex today, others as
-adapters are added.
+produced by coding agents running on your own machine — Claude Code, Codex and GitHub Copilot
+today, others as adapters are added.
 
 It reads what those agents already write to disk. It launches nothing, sends nothing, and needs no
 account.
@@ -109,15 +109,48 @@ do. If a second machine shows `not priced`, it is running an older build.
 
 ## What it measures, and how honestly
 
-| Application | Detected | Exact tokens | Model | API-equivalent cost | Latency |
-|---|---|---|---|---|---|
-| Claude Code | yes | **yes** — provider usage relayed to disk | yes | yes | no |
-| Codex (CLI, desktop, VS Code) | yes | **yes** — including reasoning tokens | yes | yes | no |
-| Claude Desktop | yes | **no** — a daily total only, not per request | no | no | no |
+| Application | Detected | Exact tokens | Model | API-equivalent cost |
+|---|---|---|---|---|
+| Claude Code | yes | **yes** — provider usage relayed to disk | yes | yes |
+| Codex (CLI, desktop, VS Code) | yes | **yes** — including reasoning tokens | yes | yes |
+| GitHub Copilot | yes | **only with its telemetry export on** — see below | yes | yes |
+| Claude Desktop | yes | **no** — a daily total only, not per request | no | no |
+| Cursor | yes | **no** — no token count in anything it writes | no | no |
+| JetBrains AI Assistant | yes | **no** — same | no | no |
+| Junie | yes | **no** — same | no | no |
+| Gemini CLI | yes | unverified — nothing on this machine to check against | — | — |
+
+Latency is unavailable for all of them; see below.
 
 This table is not marketing copy. The **Apps** tab generates the same matrix at runtime from what
 each adapter actually observes in real data, with the evidence beside each row, and it will disagree
 with this README if the tools change underneath it.
+
+**Most coding agents write a full transcript and no numbers.** That is the common case, not the
+exception, and the ones that can tell us nothing are listed rather than omitted — an application
+missing from a monitor looks exactly like one that was used and cost nothing. Each row says what was
+looked at: 775 stored Cursor conversations, 1,184 decoded JetBrains events, 1,295 Copilot session
+events, and not one token count among them.
+
+## GitHub Copilot
+
+Copilot is the one that can go either way. Nothing it writes by default carries a token count — not
+the JetBrains session transcripts, not the process logs, not the VS Code chat store. But its CLI
+exports OpenTelemetry, and with the file exporter on it writes per-request counts that are as exact
+as any other provider-reported figure:
+
+```bash
+export COPILOT_OTEL_ENABLED=true
+export COPILOT_OTEL_EXPORTER_TYPE=file
+export COPILOT_OTEL_FILE_EXPORTER_PATH="$HOME/.copilot/otel/copilot.jsonl"
+```
+
+Set those before starting a session and `aum` picks the file up on its next pass. Sessions that ran
+before the export was on recorded nothing, and nothing can reconstruct them.
+
+One trap is worth naming, because it is invisible in the result: Copilot emits `invoke_agent` spans
+carrying **session totals** alongside `chat` spans carrying **per-call** counts, under the same
+attribute names. Summing both doubles every session exactly. Only `chat` spans are counted here.
 
 **Claude Desktop deserves the emphasis.** It writes plan-limit percentages, from which there is no
 defensible conversion to a token count, and one running token total for the current day. That total
@@ -126,10 +159,14 @@ carries no model, no input/output split and no conversation, so it can never be 
 kept out of every aggregate that could imply otherwise. The app keeps the history, because Claude
 Desktop discards the counter at midnight.
 
-**Latency is unavailable everywhere**, and stays that way. Neither agent records it. The gap between
-two message timestamps contains tool execution, retry backoff and user think time, so dividing output
-tokens by it yields a plausible, well-scaled, entirely wrong tokens-per-second figure. That would
-need OpenTelemetry ingestion or a local proxy, neither of which is built.
+**Latency is not reported anywhere here.** The transcript formats do not record it, and the gap
+between two message timestamps contains tool execution, retry backoff and user think time — so
+dividing output tokens by it yields a plausible, well-scaled, entirely wrong tokens-per-second
+figure.
+
+Copilot's OpenTelemetry spans are the one exception: a span carries its own start and end, so the
+duration really is there. This tool does not record it and shows no latency column, and the Apps tab
+says exactly that rather than claiming the data does not exist.
 
 There is also **no tokenizer counting**, and that is a decision rather than a gap. A tokenizer only
 produces an estimate, and an estimate is worth having exactly where nothing better exists — which is

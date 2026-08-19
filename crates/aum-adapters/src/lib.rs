@@ -15,6 +15,7 @@
 
 pub mod claude_code;
 pub mod codex;
+pub mod copilot;
 
 use aum_domain::TokenUsage;
 

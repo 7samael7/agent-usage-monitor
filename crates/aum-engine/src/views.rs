@@ -116,12 +116,15 @@ pub fn describe_adapters(
     home: &Path,
     desktop_daily: Option<aum_contract::DailyTotal>,
 ) -> Vec<AdapterDescriptor> {
-    use aum_adapters::{claude_code::ClaudeCodeAdapter, codex::CodexAdapter};
+    use aum_adapters::{
+        claude_code::ClaudeCodeAdapter, codex::CodexAdapter, copilot::CopilotAdapter,
+    };
 
     let claude_root = home.join(".claude").join("projects");
     let codex_root = home.join(".codex").join("sessions");
+    let copilot_otel = home.join(".copilot").join("otel");
 
-    vec![
+    let mut out = vec![
         crate::probe::describe_file_adapter(
             "claude_code",
             "Claude Code",
@@ -136,11 +139,25 @@ pub fn describe_adapters(
             discover_executable("codex").map(|p| p.display().to_string()),
             codex_root.is_dir(),
         ),
+        crate::probe::describe_copilot(
+            home,
+            &crate::probe::probe(&CopilotAdapter, &copilot_otel, &is_jsonl),
+        ),
         crate::probe::describe_claude_desktop(
             Path::new("/Applications/Claude.app").is_dir(),
             desktop_daily,
         ),
-    ]
+    ];
+
+    // Everything else that was found writing sessions and no numbers. Listed
+    // rather than omitted: an application missing from a monitor looks exactly
+    // like one that was used and cost nothing.
+    out.extend(
+        crate::agents::UNMEASURED
+            .iter()
+            .map(|app| crate::agents::describe_unmeasured(app, home)),
+    );
+    out
 }
 
 #[cfg(test)]

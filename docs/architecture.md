@@ -291,6 +291,7 @@ crates/aum-adapters/
 ├─ src/lib.rs            UsageAdapter trait, capabilities, RawSignal
 ├─ src/claude_code/      transcript parser, dedup, subagents, retry chains
 ├─ src/codex/            rollout parser, cumulative reconciliation state machine
+├─ src/copilot/          OTLP span parser; measures only once the export is on
 └─ src/claude_desktop/   detection only; reports Unavailable with a reason
 ```
 
@@ -483,7 +484,7 @@ One process.
 ┌───────────────────────────── aum ────────────────────────────────┐
 │  aum-tui      clap subcommands · Ratatui tabs, charts, heatmap    │
 │  aum-engine   adapter lifecycle, capability probing, costing      │
-│  aum-adapters claude_code · codex · claude_desktop                │
+│  aum-adapters claude_code · codex · copilot · claude_desktop      │
 │  aum-ingest   tailer: cursors, partial lines, prefilter, batching │
 │  aum-db       SQLite (WAL), migrations, single write actor        │
 │  aum-domain   TokenUsage, Money, MeasurementSource  (pure)        │

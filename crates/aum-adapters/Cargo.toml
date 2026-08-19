@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+aum-contract.workspace = true
 aum-domain.workspace = true
 aum-ingest.workspace = true
 serde.workspace = true

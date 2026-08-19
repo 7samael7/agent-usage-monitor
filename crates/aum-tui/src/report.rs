@@ -552,6 +552,38 @@ pub async fn sessions(ctx: &Context, limit: i64, json: bool) -> anyhow::Result<(
 
 // ── Applications ────────────────────────────────────────────────────────────
 
+/// The mark and the sentence for one capability.
+fn mark_and_detail(state: &aum_contract::CapabilityState) -> (&'static str, &str) {
+    match state {
+        aum_contract::CapabilityState::Supported { evidence } => ("yes", evidence.as_str()),
+        aum_contract::CapabilityState::Degraded { caveat, .. } => ("~  ", caveat.as_str()),
+        aum_contract::CapabilityState::Unsupported { reason } => ("no ", reason.as_str()),
+        aum_contract::CapabilityState::Unknown { reason } => ("?  ", reason.as_str()),
+    }
+}
+
+/// Break text on word boundaries.
+///
+/// These sentences are the useful part of the Applications view — a truncated
+/// one that ends in "the exporter is on…" has thrown away the instruction.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if !current.is_empty() && current.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
 pub async fn apps(ctx: &Context, json: bool) -> anyhow::Result<()> {
     let daily = aum_db::desktop::daily_history(ctx.db.reader(), 30)
         .await
@@ -588,14 +620,39 @@ pub async fn apps(ctx: &Context, json: bool) -> anyhow::Result<()> {
         if let Some(path) = &d.executable_path {
             println!("  {}", dim(path, c));
         }
+        // Capabilities that share a reason are printed once. An application
+        // that can tell us nothing has eleven rows of the same sentence
+        // otherwise, and the sentence is what matters.
+        let mut printed: Vec<&str> = Vec::new();
         for (name, state) in &d.capabilities {
-            let (mark, detail) = match state {
-                aum_contract::CapabilityState::Supported { evidence } => ("yes", evidence.as_str()),
-                aum_contract::CapabilityState::Degraded { caveat, .. } => ("~  ", caveat.as_str()),
-                aum_contract::CapabilityState::Unsupported { reason } => ("no ", reason.as_str()),
-                aum_contract::CapabilityState::Unknown { reason } => ("?  ", reason.as_str()),
-            };
-            println!("    {mark}  {name:<28} {}", dim(&truncate(detail, 76), c));
+            if printed.contains(&name.as_str()) {
+                continue;
+            }
+            let (mark, detail) = mark_and_detail(state);
+            let same: Vec<&str> = d
+                .capabilities
+                .iter()
+                .filter(|(_, other)| mark_and_detail(other) == (mark, detail))
+                .map(|(n, _)| n.as_str())
+                .collect();
+
+            if same.len() >= 3 {
+                printed.extend(&same);
+                println!("    {mark}  {}", dim(&same.join(", "), c));
+                for line in wrap(detail, 72) {
+                    println!("         {}", dim(&line, c));
+                }
+            } else {
+                printed.push(name);
+                println!("    {mark}  {name:<28} {}", dim(&truncate(detail, 76), c));
+            }
+        }
+        // The notes carry what to do about it, which used to reach `--json`
+        // and nothing else.
+        for note in &d.notes {
+            for (i, line) in wrap(note, 76).into_iter().enumerate() {
+                println!("    {} {}", if i == 0 { "·" } else { " " }, dim(&line, c));
+            }
         }
         if let Some(total) = &d.daily_total {
             println!(

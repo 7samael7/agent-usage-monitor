@@ -130,6 +130,7 @@ dependencies = [
 name = "aum-adapters"
 version = "0.1.0"
 dependencies = [
+ "aum-contract",
  "aum-domain",
  "aum-ingest",
  "chrono",

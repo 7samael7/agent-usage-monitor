@@ -20,8 +20,10 @@ the screen is right.
 | 3 | A local proxy the user points their own client at | **Exact** | explicit opt-in |
 | 4 | Tokenizer counting over text we legitimately hold | Calculated | text we already have |
 
-Level 1 is preferred and is sufficient for both agents supported today. Level 3
-exists for clients that write nothing down. Level 4 is deliberately unused where
+Level 1 is preferred and is sufficient for Claude Code and Codex. GitHub Copilot
+sits at level 2 — it can report exactly, but only once its OpenTelemetry export
+is switched on, and not retrospectively. Level 3 exists for clients that write
+nothing down. Level 4 is deliberately unused where
 a provider already reports counts, because a tokenizer estimate that disagrees
 with a provider-reported figure is strictly worse than the figure.
 
@@ -29,8 +31,8 @@ with a provider-reported figure is strictly worse than the figure.
 
 ## Level 1 — reading what the application already writes
 
-Both supported agents record the provider's own usage object to a local file as
-they work. This is the best possible source short of being the provider: the
+Claude Code and Codex record the provider's own usage object to a local file as
+they work, with no configuration at all. This is the best possible source short of being the provider: the
 numbers are authored by the serving infrastructure and relayed without
 recomputation.
 
@@ -145,6 +147,98 @@ figure into a per-model or per-day total.
 Classified `ApplicationTelemetry` — Claude Desktop computed this itself, and
 nothing in the file indicates the provider's own per-request usage — so it
 displays as **Calculated**, never Exact.
+
+---
+
+## GitHub Copilot — nothing, unless asked
+
+Copilot is the case that justifies the whole capability matrix, because the
+answer changes depending on a setting rather than on what the tool is.
+
+What it writes without being asked, all of it measured on a real machine:
+
+| Path | Contents | Token counts |
+|---|---|---|
+| `~/.copilot/jb/<session>/partition-*.jsonl` | JetBrains session events — 1,295 of them across 14 sessions | none |
+| `~/.copilot/logs/process-*.log` | process lifecycle | none |
+| `~/.config/github-copilot/*.db` | auth, editor state, language-server caches | none |
+| VS Code `github.copilot-chat/session-store.db` | `sessions`, `turns`, `checkpoints` | no such column |
+| VS Code `chatSessions/*.jsonl` | chat state | `maxInputTokens` only |
+
+That last one is worth dwelling on. `maxInputTokens` is the model's context
+window — a capability of the model, not a measurement of anything consumed. A
+parser that matched on field names containing "tokens" would read it, multiply
+it by a rate, and produce a confident number with no relationship to what
+happened.
+
+What it writes **when asked**: the CLI exports OpenTelemetry, and its file
+exporter writes OTLP/JSON with real per-request counts, using the
+`gen_ai` semantic conventions — `gen_ai.usage.input_tokens`,
+`gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`,
+`gen_ai.usage.cache_creation.input_tokens`,
+`gen_ai.usage.reasoning.output_tokens`. Those are `ProviderReported` and display
+as **Exact**.
+
+Three environment variables switch it on, and they must be set *before* the
+session starts:
+
+```bash
+export COPILOT_OTEL_ENABLED=true
+export COPILOT_OTEL_EXPORTER_TYPE=file
+export COPILOT_OTEL_FILE_EXPORTER_PATH="$HOME/.copilot/otel/copilot.jsonl"
+```
+
+Sessions that ran without them wrote no usage anywhere, and no amount of
+reading afterwards can recover it.
+
+### Only `chat` spans are counted
+
+Copilot emits two span types carrying token attributes under the same names:
+
+- `invoke_agent` — the totals **for the whole session**
+- `chat` — the counts **for one model call**
+
+Summing both double-counts every session exactly, and a doubled total is
+entirely plausible on inspection. This is the same shape of error as Claude
+Code's fan-out and Codex's cumulative counters, and it is the third time this
+pattern has appeared in three adapters: *providers routinely report the same
+tokens twice at different granularities.*
+
+Only `chat` spans are counted. If a future version stops emitting them the
+figure drops to zero rather than drifting — wrong in the direction that gets
+noticed.
+
+### Which convention the input follows
+
+`gen_ai.usage.input_tokens` is treated as the **whole** prompt, with the cache
+read as a part of it — the OpenAI convention rather than the Anthropic one,
+matching how the attribute is documented ("total input tokens"). If a span ever
+reports more cached tokens than input, the reading is wrong; that span is
+dropped and an anomaly recorded, rather than letting an unsigned subtraction
+wrap into roughly 1.8×10¹⁹ tokens.
+
+---
+
+## The agents that report nothing at all
+
+Most do. Detected, listed, and measured as zero-capability rather than left out:
+
+| Application | What it keeps | Token counts |
+|---|---|---|
+| Cursor | per-chat SQLite blobs — 775 held prompts and completions | none; `ai-tracking` counts *lines of code* |
+| JetBrains AI Assistant | `aia-task-history/*.events`, base64 JSON — 1,184 decoded | none |
+| Junie | `history.jsonl` and rotating logs | none |
+| Gemini CLI | `~/.gemini/tmp/*/chats/` | nothing present here to verify against |
+
+Listing them is the point. An application absent from a monitor is
+indistinguishable from one that was used and cost nothing, and the second
+reading is the dangerous one. Their usage is missing from every total here, and
+the Applications view says so in those words.
+
+Gemini CLI is the honest edge: it is documented to write chats that carry usage,
+but this machine has never run it, so there is no file to verify a parser
+against. One written from documentation alone would be untested against the only
+thing that matters, which is exactly how a confident wrong number ships.
 
 ---
 
