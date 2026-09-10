@@ -230,6 +230,8 @@ cargo test
 cargo run -p aum-tui       # run without installing
 ```
 
+Pull requests run the same `make check` on macOS and on Linux, which no desk here provides.
+
 Tests that read this machine's own agent data are ignored by default, because they need data that
 only exists where the agents have really run:
 
@@ -237,6 +239,24 @@ only exists where the agents have really run:
 cargo test -p aum-adapters --test real_corpus -- --ignored --nocapture
 cargo test -p aum-engine   --test probe_real  -- --ignored --nocapture
 ```
+
+## Releasing
+
+Merging to main builds a version. The `release` workflow settles the version number, builds and
+tests on macOS and Linux, tags the commit, publishes a GitHub release with binaries for Apple
+silicon, Intel Macs and both Linux architectures, and points the Homebrew formula at the new
+source tarball.
+
+The number comes from `Cargo.toml`. Bump it in the pull request to choose the version. Leave it
+alone and the workflow bumps the patch number itself, in a commit of its own on main, before
+anything is built — the tagged source and the binaries have to agree on what `aum --version`
+prints. Nothing is tagged until every target has built and the native ones have passed the tests,
+so a failed run leaves main one version ahead of the releases, and the next successful run catches
+up.
+
+The formula step needs a `HOMEBREW_TAP_TOKEN` repository secret: a fine-grained token with read
+and write on the contents of `7samael7/homebrew-tap`. Without it the step says so and skips, and
+the tap's own daily `autobump` workflow, or a hand edit of `Formula/aum.rb`, does the job.
 
 ## Contributing a fixture
 
