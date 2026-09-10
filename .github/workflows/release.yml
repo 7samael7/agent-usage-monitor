@@ -9,9 +9,11 @@
 #     of its own on main, before anything is built. The tagged source and the
 #     binaries must agree on what `aum --version` prints.
 #
-# Nothing is tagged until every target has built and the native ones have
-# passed their tests. A failed run therefore leaves main one version ahead of
-# the releases; the next successful run catches up.
+# The build itself is `build.yml`, the same one pull requests run, so a merge
+# never builds anything for the first time. Nothing is tagged until every
+# target has built and the native ones have passed their tests. A failed run
+# therefore leaves main one version ahead of the releases; the next successful
+# run catches up.
 name: release
 
 on:
@@ -30,9 +32,6 @@ concurrency:
 defaults:
   run:
     shell: bash
-
-env:
-  CARGO_TERM_COLOR: always
 
 jobs:
   version:
@@ -68,64 +67,13 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build ${{ matrix.target }}
     needs: version
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            test: true
-          # Cross-compiled from Apple silicon; the bundled SQLite builds fine that way.
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            test: false
-          # The oldest image on offer, so the binaries ask for the oldest glibc.
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            test: true
-          - os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-            test: true
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.version.outputs.sha }}
-
-      - name: Install the toolchain pinned in rust-toolchain.toml
-        run: |
-          rustup toolchain install
-          rustup target add ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Format, lint, test
-        if: matrix.test
-        run: |
-          cargo fmt --all --check
-          cargo clippy --all-targets --locked -- -D warnings
-          cargo test --locked
-
-      - name: Build
-        run: cargo build --release --locked --package aum-tui --target ${{ matrix.target }}
-
-      - name: Package
-        env:
-          NAME: aum-${{ needs.version.outputs.version }}-${{ matrix.target }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          mkdir "$NAME"
-          cp "target/$TARGET/release/aum" LICENSE README.md "$NAME/"
-          tar czf "$NAME.tar.gz" "$NAME"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.target }}
-          path: "*.tar.gz"
-          if-no-files-found: error
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.version.outputs.sha }}
+      version: ${{ needs.version.outputs.version }}
 
   release:
     name: Tag v${{ needs.version.outputs.version }} and publish

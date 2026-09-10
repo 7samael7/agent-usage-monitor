@@ -1,0 +1,88 @@
+# The one build. Pull requests run it to find out what a merge would ship;
+# `release` runs it on the settled version to ship it. Same targets, same
+# checks, same command, so nothing is built for the first time after a merge.
+#
+# Formatting, clippy and the test suite run on every target that can run its
+# own binary. Intel macOS is cross-compiled from Apple silicon and only built.
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build. Empty means whatever triggered the caller.
+        type: string
+        default: ""
+      version:
+        description: Goes into the package names, e.g. 0.1.1 or pr-7.
+        type: string
+        required: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  target:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            test: true
+          # Cross-compiled from Apple silicon; the bundled SQLite builds fine that way.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            test: false
+          # The oldest image on offer, so the binaries ask for the oldest glibc.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            test: true
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            test: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install the toolchain pinned in rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Format, lint, test
+        if: matrix.test
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked --package aum-tui --target ${{ matrix.target }}
+
+      - name: Package
+        env:
+          NAME: aum-${{ inputs.version }}-${{ matrix.target }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir "$NAME"
+          cp "target/$TARGET/release/aum" LICENSE README.md "$NAME/"
+          tar czf "$NAME.tar.gz" "$NAME"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: "*.tar.gz"
+          if-no-files-found: error
+          retention-days: 7

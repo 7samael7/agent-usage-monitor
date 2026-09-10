@@ -1,6 +1,6 @@
-# Runs on every pull request what `make check` runs at a desk: format, lint,
-# tests. On the platform the project is developed on, and on Linux, which no
-# desk here provides.
+# Every pull request builds what a merge would ship: all four release targets,
+# with formatting, clippy and the test suite on each one that can run its own
+# binary. The binaries are attached to the run for a week, for trying out.
 name: ci
 
 on:
@@ -14,23 +14,8 @@ concurrency:
   group: ci-${{ github.head_ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  check:
-    name: make check on ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-22.04]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install the toolchain pinned in rust-toolchain.toml
-        run: rustup toolchain install
-
-      - uses: Swatinem/rust-cache@v2
-
-      - run: make check
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      version: pr-${{ github.event.pull_request.number }}

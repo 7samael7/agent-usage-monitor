@@ -230,7 +230,9 @@ cargo test
 cargo run -p aum-tui       # run without installing
 ```
 
-Pull requests run the same `make check` on macOS and on Linux, which no desk here provides.
+Pull requests build all four release targets and run the same checks on each one that can run
+its own binary, on macOS and on Linux, which no desk here provides. The binaries stay attached
+to the run for a week.
 
 Tests that read this machine's own agent data are ignored by default, because they need data that
 only exists where the agents have really run:
@@ -242,10 +244,10 @@ cargo test -p aum-engine   --test probe_real  -- --ignored --nocapture
 
 ## Releasing
 
-Merging to main builds a version. The `release` workflow settles the version number, builds and
-tests on macOS and Linux, tags the commit, publishes a GitHub release with binaries for Apple
-silicon, Intel Macs and both Linux architectures, and points the Homebrew formula at the new
-source tarball.
+Merging to main builds a version. The `release` workflow settles the version number, runs the
+same `build` that pull requests run — tests included, on macOS and Linux — tags the commit,
+publishes a GitHub release with binaries for Apple silicon, Intel Macs and both Linux
+architectures, and points the Homebrew formula at the new source tarball.
 
 The number comes from `Cargo.toml`. Bump it in the pull request to choose the version. Leave it
 alone and the workflow bumps the patch number itself, in a commit of its own on main, before
