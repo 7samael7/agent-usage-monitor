@@ -1,19 +1,16 @@
 # Builds a version after every merge to main.
 #
 # The contract: a push to main ends as a tagged, published release, and the
-# Homebrew formula follows it. Which version depends on Cargo.toml:
-#
-#   * If the workspace version in Cargo.toml has no tag yet, that is the
-#     version. Bump it in the pull request to choose a minor or a major.
-#   * If it is already released, the patch number is bumped here, in a commit
-#     of its own on main, before anything is built. The tagged source and the
-#     binaries must agree on what `aum --version` prints.
+# Homebrew formula follows it. The version is whatever Cargo.toml says, and it
+# has to be new. Main changes only through a pull request, so the bump travels
+# in the pull request (`make bump`), and `ci` refuses one that forgot. A merge
+# that still arrives with a released version fails here, out loud, rather than
+# releasing nothing quietly. Re-running on the commit that is already the
+# release is a no-op.
 #
 # The build itself is `build.yml`, the same one pull requests run, so a merge
 # never builds anything for the first time. Nothing is tagged until every
-# target has built and the native ones have passed their tests. A failed run
-# therefore leaves main one version ahead of the releases; the next successful
-# run catches up.
+# target has built and the native ones have passed their tests.
 name: release
 
 on:
@@ -35,56 +32,48 @@ defaults:
 
 jobs:
   version:
-    name: Settle the version
+    name: Read the version
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.settle.outputs.version }}
-      sha: ${{ steps.settle.outputs.sha }}
+      version: ${{ steps.read.outputs.version }}
+      release: ${{ steps.read.outputs.release }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install the toolchain pinned in rust-toolchain.toml
-        run: rustup toolchain install
-
-      - name: Read Cargo.toml, bump the patch if that version is already released
-        id: settle
+      - name: Read Cargo.toml and make sure that version is not released yet
+        id: read
         run: |
-          current=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-          if git ls-remote --exit-code --tags origin "refs/tags/v$current" >/dev/null; then
-            IFS=. read -r major minor patch <<<"$current"
-            next="$major.$minor.$((patch + 1))"
-            sed -i "s/^version = \"$current\"\$/version = \"$next\"/" Cargo.toml
-            cargo update --workspace
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit --quiet --all --message "aum $next" --message \
-              "v$current is already released and ${GITHUB_SHA::7} merged without changing the version, so the release workflow bumped the patch number."
-            git push origin HEAD:main
-            echo "::notice title=Version bumped::v$current is already released; main now says $next."
-            current=$next
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if ! git fetch --quiet --depth=1 origin "refs/tags/v$version:refs/tags/v$version" 2>/dev/null; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "v$version is new; releasing it from ${GITHUB_SHA::7}."
+          elif [ "$(git rev-parse "v$version^{commit}")" = "$GITHUB_SHA" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Already released::v$version is this very commit. Nothing to build."
+          else
+            echo "::error title=Nothing to release::Cargo.toml still says $version, and v$version is already released from another commit. The version travels in the pull request: run 'make bump' and commit Cargo.toml and Cargo.lock."
+            exit 1
           fi
-          echo "version=$current" >> "$GITHUB_OUTPUT"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: version
+    if: needs.version.outputs.release == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/build.yml
     with:
-      ref: ${{ needs.version.outputs.sha }}
       version: ${{ needs.version.outputs.version }}
 
   release:
     name: Tag v${{ needs.version.outputs.version }} and publish
     needs: [version, build]
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.version.outputs.sha }}
 
       - uses: actions/download-artifact@v8
         with:
@@ -109,6 +98,7 @@ jobs:
   homebrew:
     name: Bump the Homebrew formula
     needs: [version, release]
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     env:
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

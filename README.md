@@ -244,17 +244,17 @@ cargo test -p aum-engine   --test probe_real  -- --ignored --nocapture
 
 ## Releasing
 
-Merging to main builds a version. The `release` workflow settles the version number, runs the
-same `build` that pull requests run — tests included, on macOS and Linux — tags the commit,
+Merging to main builds a version. The `release` workflow reads the version from `Cargo.toml`, runs
+the same `build` that pull requests run — tests included, on macOS and Linux — tags the commit,
 publishes a GitHub release with binaries for Apple silicon, Intel Macs and both Linux
 architectures, and points the Homebrew formula at the new source tarball.
 
-The number comes from `Cargo.toml`. Bump it in the pull request to choose the version. Leave it
-alone and the workflow bumps the patch number itself, in a commit of its own on main, before
-anything is built — the tagged source and the binaries have to agree on what `aum --version`
-prints. Nothing is tagged until every target has built and the native ones have passed the tests,
-so a failed run leaves main one version ahead of the releases, and the next successful run catches
-up.
+The version travels in the pull request, because main changes only through one. `make bump`
+raises the patch number and `make bump V=0.2.0` sets any version; both rewrite `Cargo.toml` and
+`Cargo.lock` for you to commit with your change. A pull request whose version is already released
+fails its `version` check, and a merge that gets past that anyway fails the release run with the
+same words, rather than quietly releasing nothing. Nothing is tagged until every target has built
+and the native ones have passed the tests.
 
 The formula step needs a `HOMEBREW_TAP_TOKEN` repository secret: a fine-grained token with read
 and write on the contents of `7samael7/homebrew-tap`. Without it the step says so and skips, and

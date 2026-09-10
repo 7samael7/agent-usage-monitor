@@ -1,6 +1,10 @@
 # Every pull request builds what a merge would ship: all four release targets,
 # with formatting, clippy and the test suite on each one that can run its own
 # binary. The binaries are attached to the run for a week, for trying out.
+#
+# It also checks that the pull request carries a version nobody has released
+# yet, because merging is what releases it, and main accepts nothing but pull
+# requests. `make bump` is the one command that satisfies it.
 name: ci
 
 on:
@@ -15,6 +19,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  version:
+    name: version is new
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The version in Cargo.toml must not be released yet
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "::error title=Bump the version::Cargo.toml says $version, and v$version is already released, so merging this would build nothing. Run 'make bump' (or 'make bump V=x.y.z') and commit Cargo.toml and Cargo.lock."
+            exit 1
+          fi
+          echo "Merging releases v$version."
+
   build:
     uses: ./.github/workflows/build.yml
     with:
