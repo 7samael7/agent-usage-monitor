@@ -43,14 +43,24 @@ day and hour, and a year-wide contribution graph.
 
 ## Installing
 
-Requirements: Rust 1.92, pinned in `rust-toolchain.toml`. `make doctor` checks.
+With Homebrew:
+
+```bash
+brew install 7samael7/tap/aum
+```
+
+The formula lives in [`7samael7/homebrew-tap`](https://github.com/7samael7/homebrew-tap) and
+builds the tagged release from source on your machine, so the first install compiles for a few
+minutes. Homebrew brings in Rust as a build dependency if it is not already there.
+
+From a checkout, requirements: Rust 1.92, pinned in `rust-toolchain.toml`. `make doctor` checks.
 
 ```bash
 make install
 ```
 
-That is `cargo install --path crates/aum-tui`, which puts `aum` in `~/.cargo/bin`. Then, in any
-terminal:
+That is `cargo install --path crates/aum-tui`, which puts `aum` in `~/.cargo/bin`. Either way, in
+any terminal:
 
 ```bash
 aum
@@ -255,4 +265,5 @@ re-checks what is already committed, and `.gitignore` blocks `*.jsonl` outside `
 
 ## Licence
 
-MIT. Private project; not accepting external contributions at this stage.
+MIT — the text is in [`LICENSE`](LICENSE). Private project; not accepting external contributions
+at this stage.
