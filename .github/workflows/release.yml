@@ -1,0 +1,198 @@
+# Builds a version after every merge to main.
+#
+# The contract: a push to main ends as a tagged, published release, and the
+# Homebrew formula follows it. Which version depends on Cargo.toml:
+#
+#   * If the workspace version in Cargo.toml has no tag yet, that is the
+#     version. Bump it in the pull request to choose a minor or a major.
+#   * If it is already released, the patch number is bumped here, in a commit
+#     of its own on main, before anything is built. The tagged source and the
+#     binaries must agree on what `aum --version` prints.
+#
+# Nothing is tagged until every target has built and the native ones have
+# passed their tests. A failed run therefore leaves main one version ahead of
+# the releases; the next successful run catches up.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One release at a time, in order. A second merge waits for the first.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Settle the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.settle.outputs.version }}
+      sha: ${{ steps.settle.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the toolchain pinned in rust-toolchain.toml
+        run: rustup toolchain install
+
+      - name: Read Cargo.toml, bump the patch if that version is already released
+        id: settle
+        run: |
+          current=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if git ls-remote --exit-code --tags origin "refs/tags/v$current" >/dev/null; then
+            IFS=. read -r major minor patch <<<"$current"
+            next="$major.$minor.$((patch + 1))"
+            sed -i "s/^version = \"$current\"\$/version = \"$next\"/" Cargo.toml
+            cargo update --workspace
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --quiet --all --message "aum $next" --message \
+              "v$current is already released and ${GITHUB_SHA::7} merged without changing the version, so the release workflow bumped the patch number."
+            git push origin HEAD:main
+            echo "::notice title=Version bumped::v$current is already released; main now says $next."
+            current=$next
+          fi
+          echo "version=$current" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            test: true
+          # Cross-compiled from Apple silicon; the bundled SQLite builds fine that way.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            test: false
+          # The oldest image on offer, so the binaries ask for the oldest glibc.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            test: true
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            test: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Install the toolchain pinned in rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Format, lint, test
+        if: matrix.test
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked --package aum-tui --target ${{ matrix.target }}
+
+      - name: Package
+        env:
+          NAME: aum-${{ needs.version.outputs.version }}-${{ matrix.target }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir "$NAME"
+          cp "target/$TARGET/release/aum" LICENSE README.md "$NAME/"
+          tar czf "$NAME.tar.gz" "$NAME"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: "*.tar.gz"
+          if-no-files-found: error
+
+  release:
+    name: Tag v${{ needs.version.outputs.version }} and publish
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum -- *.tar.gz | tee SHA256SUMS
+
+      - name: Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "v$VERSION" --message "aum $VERSION"
+          git push origin "v$VERSION"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v$VERSION" --verify-tag --latest --title "v$VERSION" --generate-notes dist/*
+
+  homebrew:
+    name: Bump the Homebrew formula
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Say so when there is no token
+        if: env.TAP_TOKEN == ''
+        run: |
+          echo "::notice title=Homebrew formula not bumped::No HOMEBREW_TAP_TOKEN secret. Add a fine-grained token with read and write on contents of 7samael7/homebrew-tap, or point url and sha256 in Formula/aum.rb at v$VERSION by hand."
+
+      - uses: actions/checkout@v7
+        if: env.TAP_TOKEN != ''
+        with:
+          repository: 7samael7/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Point the formula at the new source tarball
+        if: env.TAP_TOKEN != ''
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          url="https://github.com/$REPOSITORY/archive/refs/tags/v$VERSION.tar.gz"
+          sha=$(curl --silent --show-error --fail --location "$url" | sha256sum | cut -d' ' -f1)
+          sed -i \
+            -e "s|^  url \".*\"$|  url \"$url\"|" \
+            -e "s|^  sha256 \".*\"$|  sha256 \"$sha\"|" \
+            Formula/aum.rb
+          if git diff --quiet; then
+            echo "Formula already at v$VERSION."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --quiet --all --message "aum $VERSION"
+          git push
