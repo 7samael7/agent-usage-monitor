@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "aum-adapters"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aum-contract",
  "aum-domain",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "aum-contract"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "aum-db"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aum-contract",
  "aum-domain",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "aum-domain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aum-contract",
  "chrono",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "aum-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "aum-adapters",
@@ -209,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "aum-ingest"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "memchr",
  "notify",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "aum-pricing"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aum-contract",
  "aum-domain",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "aum-tui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "aum-contract",
@@ -3756,7 +3756,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde_json",

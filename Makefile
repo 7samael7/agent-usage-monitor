@@ -48,6 +48,15 @@ check: ## Everything CI would run: format, lint, test
 fmt: ## Format
 	cargo fmt --all
 
+.PHONY: bump
+bump: ## Set the version the next merge releases: make bump (patch), or make bump V=0.2.0
+	@current=$$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2); \
+	next="$(V)"; \
+	if [ -z "$$next" ]; then IFS=. read -r major minor patch <<<"$$current"; next="$$major.$$minor.$$((patch + 1))"; fi; \
+	sed "s/^version = \"$$current\"$$/version = \"$$next\"/" Cargo.toml > Cargo.toml.bump && mv Cargo.toml.bump Cargo.toml; \
+	cargo update --workspace --quiet; \
+	echo "==> $$current -> $$next in Cargo.toml and Cargo.lock; commit both with your change"
+
 .PHONY: redact
 redact: ## Make a fixture from a real transcript: make redact IN=... OUT=...
 	@test -n "$(IN)" -a -n "$(OUT)" \
