@@ -363,10 +363,13 @@ mod tests {
         let table = load_table(&db).await.unwrap();
         for model in [
             "claude-opus-5",
+            "claude-opus-5-5",
             "claude-fable-5",
+            "claude-fable-5-1",
             "claude-sonnet-5",
             "gpt-5.6-terra",
             "gpt-5.5",
+            "gpt-6-astra",
         ] {
             assert!(
                 table.has_price(model),

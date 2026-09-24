@@ -11,7 +11,21 @@
     },
     "effective_from": "2026-08-13T00:00:00.000Z",
     "source": "seed",
-    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24"
+  },
+  {
+    "version_id": "seed-claude-fable-5-1-2026-09",
+    "model_id": "claude-fable-5-1",
+    "rates": {
+      "input_per_mtok": "10.00",
+      "output_per_mtok": "50.00",
+      "cache_read_per_mtok": "0.25",
+      "cache_write_5m_per_mtok": "12.50",
+      "cache_write_1h_per_mtok": "20.00"
+    },
+    "effective_from": "2026-09-24T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24; cache reads at 0.025x input rather than the usual 0.1x"
   },
   {
     "version_id": "seed-claude-haiku-4-5-2025-10",
@@ -25,7 +39,7 @@
     },
     "effective_from": "2025-10-01T00:00:00.000Z",
     "source": "seed",
-    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24"
   },
   {
     "version_id": "seed-claude-opus-4-1-2025-08",
@@ -39,7 +53,7 @@
     },
     "effective_from": "2025-08-05T00:00:00.000Z",
     "source": "seed",
-    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17; retired except on Bedrock and Google Cloud"
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24; retired except on Bedrock and Google Cloud"
   },
   {
     "version_id": "seed-claude-opus-4-8-2026-08",
@@ -53,7 +67,7 @@
     },
     "effective_from": "2026-08-13T00:00:00.000Z",
     "source": "seed",
-    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24"
   },
   {
     "version_id": "seed-claude-opus-5-2026-08",
@@ -67,7 +81,21 @@
     },
     "effective_from": "2026-08-13T00:00:00.000Z",
     "source": "seed",
-    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24"
+  },
+  {
+    "version_id": "seed-claude-opus-5-5-2026-09",
+    "model_id": "claude-opus-5-5",
+    "rates": {
+      "input_per_mtok": "4.00",
+      "output_per_mtok": "20.00",
+      "cache_read_per_mtok": "0.20",
+      "cache_write_5m_per_mtok": "5.00",
+      "cache_write_1h_per_mtok": "8.00"
+    },
+    "effective_from": "2026-09-24T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24; cache reads at 0.05x input rather than the usual 0.1x"
   },
   {
     "version_id": "seed-claude-sonnet-4-5-2025-10",
@@ -81,7 +109,7 @@
     },
     "effective_from": "2025-10-01T00:00:00.000Z",
     "source": "seed",
-    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24"
   },
   {
     "version_id": "seed-claude-sonnet-5-2026-08",
@@ -95,7 +123,7 @@
     },
     "effective_from": "2026-08-13T00:00:00.000Z",
     "source": "seed",
-    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-08-17"
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24; the launch price is now the standard one, and the rise to 3.00/15.00 planned for 2026-09-01 was cancelled"
   },
   {
     "version_id": "seed-gpt-5.4-2026-08",
@@ -109,7 +137,7 @@
     },
     "effective_from": "2026-08-13T00:00:00.000Z",
     "source": "seed",
-    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17; the short-context rate, which applies below 272K context"
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
   },
   {
     "version_id": "seed-gpt-5.4-mini-2026-08",
@@ -123,7 +151,7 @@
     },
     "effective_from": "2026-08-13T00:00:00.000Z",
     "source": "seed",
-    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17"
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24"
   },
   {
     "version_id": "seed-gpt-5.5-2026-08",
@@ -137,34 +165,76 @@
     },
     "effective_from": "2026-08-13T00:00:00.000Z",
     "source": "seed",
-    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17; the short-context rate, which applies below 272K context"
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
   },
   {
-    "version_id": "seed-gpt-5.6-sol-2026-08",
+    "version_id": "seed-gpt-5.6-sol-2026-09",
     "model_id": "gpt-5.6-sol",
     "rates": {
-      "input_per_mtok": "5.00",
-      "output_per_mtok": "30.00",
-      "cache_read_per_mtok": "0.50",
+      "input_per_mtok": "4.00",
+      "output_per_mtok": "20.00",
+      "cache_read_per_mtok": "0.40",
       "cache_write_5m_per_mtok": "5.00",
       "cache_write_1h_per_mtok": "5.00"
     },
-    "effective_from": "2026-08-13T00:00:00.000Z",
+    "effective_from": "2026-09-24T00:00:00.000Z",
     "source": "seed",
-    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17"
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; a promotional rate, down from 5.00/30.00 and offered at least through 2026-11-21; the short-context rate, which applies below 272K context"
   },
   {
-    "version_id": "seed-gpt-5.6-terra-2026-08",
+    "version_id": "seed-gpt-5.6-terra-2026-09",
     "model_id": "gpt-5.6-terra",
     "rates": {
       "input_per_mtok": "2.00",
       "output_per_mtok": "12.00",
       "cache_read_per_mtok": "0.20",
-      "cache_write_5m_per_mtok": "2.00",
-      "cache_write_1h_per_mtok": "2.00"
+      "cache_write_5m_per_mtok": "2.50",
+      "cache_write_1h_per_mtok": "2.50"
     },
-    "effective_from": "2026-08-13T00:00:00.000Z",
+    "effective_from": "2026-09-24T00:00:00.000Z",
     "source": "seed",
-    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17"
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-6-astra-2026-09",
+    "model_id": "gpt-6-astra",
+    "rates": {
+      "input_per_mtok": "10.00",
+      "output_per_mtok": "50.00",
+      "cache_read_per_mtok": "1.00",
+      "cache_write_5m_per_mtok": "12.50",
+      "cache_write_1h_per_mtok": "12.50"
+    },
+    "effective_from": "2026-09-24T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-6-luna-2026-09",
+    "model_id": "gpt-6-luna",
+    "rates": {
+      "input_per_mtok": "0.10",
+      "output_per_mtok": "0.50",
+      "cache_read_per_mtok": "0.01",
+      "cache_write_5m_per_mtok": "0.125",
+      "cache_write_1h_per_mtok": "0.125"
+    },
+    "effective_from": "2026-09-24T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-6-sol-2026-09",
+    "model_id": "gpt-6-sol",
+    "rates": {
+      "input_per_mtok": "2.00",
+      "output_per_mtok": "10.00",
+      "cache_read_per_mtok": "0.20",
+      "cache_write_5m_per_mtok": "2.50",
+      "cache_write_1h_per_mtok": "2.50"
+    },
+    "effective_from": "2026-09-24T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
   }
 ]
