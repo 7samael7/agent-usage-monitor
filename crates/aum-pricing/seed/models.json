@@ -168,7 +168,21 @@
     "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
   },
   {
-    "version_id": "seed-gpt-5.6-sol-2026-09",
+    "version_id": "seed-gpt-5.6-sol-2026-07-09",
+    "model_id": "gpt-5.6-sol",
+    "rates": {
+      "input_per_mtok": "5.00",
+      "output_per_mtok": "30.00",
+      "cache_read_per_mtok": "0.50",
+      "cache_write_5m_per_mtok": "6.25",
+      "cache_write_1h_per_mtok": "6.25"
+    },
+    "effective_from": "2026-07-09T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-08-17; the launch price, in force until the promotion of 2026-08-21 (developers.openai.com/api/docs/changelog); cache writes at 1.25x input, as the model page states; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-5.6-sol-2026-08-21",
     "model_id": "gpt-5.6-sol",
     "rates": {
       "input_per_mtok": "4.00",
@@ -177,12 +191,26 @@
       "cache_write_5m_per_mtok": "5.00",
       "cache_write_1h_per_mtok": "5.00"
     },
-    "effective_from": "2026-09-24T00:00:00.000Z",
+    "effective_from": "2026-08-21T00:00:00.000Z",
     "source": "seed",
-    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; a promotional rate, down from 5.00/30.00 and offered at least through 2026-11-21; the short-context rate, which applies below 272K context"
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; a promotional rate from 2026-08-21 (developers.openai.com/api/docs/changelog), offered at least through 2026-11-21; cache writes at 1.25x input, as the model page states; the short-context rate, which applies below 272K context"
   },
   {
-    "version_id": "seed-gpt-5.6-terra-2026-09",
+    "version_id": "seed-gpt-5.6-terra-2026-07-09",
+    "model_id": "gpt-5.6-terra",
+    "rates": {
+      "input_per_mtok": "2.50",
+      "output_per_mtok": "15.00",
+      "cache_read_per_mtok": "0.25",
+      "cache_write_5m_per_mtok": "3.125",
+      "cache_write_1h_per_mtok": "3.125"
+    },
+    "effective_from": "2026-07-09T00:00:00.000Z",
+    "source": "seed",
+    "note": "the price-drop announcement on community.openai.com, checked 2026-09-24; the launch price, in force until the 20% cut of 2026-07-30; cache writes at 1.25x input, as the model page states; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-5.6-terra-2026-07-30",
     "model_id": "gpt-5.6-terra",
     "rates": {
       "input_per_mtok": "2.00",
@@ -191,9 +219,9 @@
       "cache_write_5m_per_mtok": "2.50",
       "cache_write_1h_per_mtok": "2.50"
     },
-    "effective_from": "2026-09-24T00:00:00.000Z",
+    "effective_from": "2026-07-30T00:00:00.000Z",
     "source": "seed",
-    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; in force since the 20% cut of 2026-07-30 (developers.openai.com/api/docs/changelog); cache writes at 1.25x input, as the model page states; the short-context rate, which applies below 272K context"
   },
   {
     "version_id": "seed-gpt-6-astra-2026-09",
@@ -205,7 +233,7 @@
       "cache_write_5m_per_mtok": "12.50",
       "cache_write_1h_per_mtok": "12.50"
     },
-    "effective_from": "2026-09-24T00:00:00.000Z",
+    "effective_from": "2026-09-03T00:00:00.000Z",
     "source": "seed",
     "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
   },
@@ -219,7 +247,7 @@
       "cache_write_5m_per_mtok": "0.125",
       "cache_write_1h_per_mtok": "0.125"
     },
-    "effective_from": "2026-09-24T00:00:00.000Z",
+    "effective_from": "2026-09-22T00:00:00.000Z",
     "source": "seed",
     "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
   },
@@ -233,7 +261,7 @@
       "cache_write_5m_per_mtok": "2.50",
       "cache_write_1h_per_mtok": "2.50"
     },
-    "effective_from": "2026-09-24T00:00:00.000Z",
+    "effective_from": "2026-09-22T00:00:00.000Z",
     "source": "seed",
     "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
   }

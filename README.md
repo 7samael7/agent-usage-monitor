@@ -107,7 +107,8 @@ aum models --sort cost              # where the money went
 
 Rates for the models these agents currently run are compiled into the binary, with the page and date
 each was read from, so a fresh install prices its history straight away. A model published after your
-build shows `— not priced` rather than a guess; enter its rate and yours wins from then on:
+build shows `— not priced` rather than a guess; enter its rate and it prices that model from then on,
+and its usage before then too, which had no rate to keep:
 
 ```bash
 aum price gpt-5.7 --input 2.00 --output 12.00 --cache-read 0.20 --note "openai pricing, checked today"

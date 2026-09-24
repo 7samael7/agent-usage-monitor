@@ -102,9 +102,10 @@ pub async fn overview(
     let failed = usage::failed_count(ctx.db.reader(), filter).await?;
     let per_model = usage::by_model(ctx.db.reader(), filter).await?;
     let per_adapter = usage::by_adapter(ctx.db.reader(), filter).await?;
+    let slices = priced_slices(ctx, filter).await?;
 
     let cost = ctx.cost().present(aum_engine::prices::cost_of_slices(
-        per_model.iter().map(|(m, t)| (m, t)),
+        &slices,
         &ctx.money.table,
     ));
 
@@ -200,10 +201,10 @@ pub async fn overview(
     if !per_model.is_empty() {
         println!("\n{}", heading("Top models", c));
         // Biggest first, always: the overview's job is to say where it went.
-        let costs = model_costs(ctx, &per_model);
+        let costs = model_costs(ctx, &per_model, &slices);
         let mut rows = crate::sort::join_models(&per_model, &costs, NOT_REPORTED);
         crate::sort::apply(&mut rows, crate::sort::Sort::LARGEST_FIRST);
-        print!("{}", model_table(ctx, &rows, 8));
+        print!("{}", model_table(ctx, &rows, &slices, 8));
     }
 
     println!("\n{}", fmt::legend(c));
@@ -221,14 +222,15 @@ pub async fn buckets(
     json: bool,
     sort: crate::sort::Sort,
 ) -> anyhow::Result<()> {
+    let breaks = ctx.money.table.breaks();
     let slices = if hourly {
-        usage::by_hour_model(ctx.db.reader(), filter).await?
+        usage::by_hour_model(ctx.db.reader(), filter, &breaks).await?
     } else {
-        usage::by_day_model(ctx.db.reader(), filter).await?
+        usage::by_day_model(ctx.db.reader(), filter, &breaks).await?
     };
     let folded = usage::fold_by_bucket(&slices);
     // Costed per model within each bucket, then summed — never from the
-    // bucket's blended tokens.
+    // bucket's blended tokens — and each slice at the rate of its own time.
     let costs: Vec<_> = aum_engine::prices::cost_by_bucket(&slices, &ctx.money.table)
         .into_iter()
         .map(|(at, m)| (at, ctx.cost().present(m)))
@@ -339,30 +341,39 @@ pub async fn models(
     sort: crate::sort::Sort,
 ) -> anyhow::Result<()> {
     let per_model = usage::by_model(ctx.db.reader(), filter).await?;
+    let slices = priced_slices(ctx, filter).await?;
 
     if json {
+        let rate_json = |p: &aum_pricing::ModelPricing| {
+            json!({
+                "input_per_mtok": p.rates.input_per_mtok.to_string(),
+                "output_per_mtok": p.rates.output_per_mtok.to_string(),
+                "source": p.source,
+                "effective_from": p.effective_from,
+            })
+        };
         let rows: Vec<_> = per_model
             .iter()
             .map(|(model, t)| {
-                let cost = ctx.cost().present(aum_engine::prices::cost_of_slices(
-                    std::iter::once((model, t)),
+                let cost = ctx.cost().present(aum_engine::prices::cost_of_model(
+                    model.as_deref(),
+                    &slices,
                     &ctx.money.table,
                 ));
-                let rate = model
-                    .as_deref()
-                    .and_then(|m| ctx.money.table.lookup(m))
-                    .map(|p| {
-                        json!({
-                            "input_per_mtok": p.rates.input_per_mtok.to_string(),
-                            "output_per_mtok": p.rates.output_per_mtok.to_string(),
-                            "source": p.source,
-                        })
-                    });
+                let used = model.as_deref().map_or_else(Vec::new, |m| {
+                    aum_engine::prices::rates_used(m, &slices, &ctx.money.table)
+                });
+                // `rate` priced the latest usage in the range; any others
+                // priced what came before it, oldest first.
+                let (rate, earlier) = used.split_last().map_or((None, &[][..]), |(last, rest)| {
+                    (Some(rate_json(last)), rest)
+                });
                 json!({
                     "model": model,
                     "totals": totals_json(t),
                     "cost": measured_money_json(&cost, ctx.currency_code()),
                     "rate": rate,
+                    "earlier_rates": earlier.iter().map(|p| rate_json(p)).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -384,10 +395,10 @@ pub async fn models(
         println!("  Nothing recorded in this range.");
         return Ok(());
     }
-    let costs = model_costs(ctx, &per_model);
+    let costs = model_costs(ctx, &per_model, &slices);
     let mut rows = crate::sort::join_models(&per_model, &costs, NOT_REPORTED);
     crate::sort::apply(&mut rows, sort);
-    print!("{}", model_table(ctx, &rows, usize::MAX));
+    print!("{}", model_table(ctx, &rows, &slices, usize::MAX));
     println!(
         "\n{}{}",
         fmt::legend(c),
@@ -405,20 +416,38 @@ fn order_note(rows: usize, sort: crate::sort::Sort, labels: crate::sort::Labels)
     format!("   ({})", sort.describe(labels))
 }
 
+/// The range's usage, cut wherever a price changes, for costing.
+///
+/// Day slices rather than one row per model: a model's usage over a range can
+/// span a price change, and the part before it keeps the older rate.
+async fn priced_slices(ctx: &Context, filter: &Filter) -> anyhow::Result<Vec<usage::Slice>> {
+    Ok(usage::by_day_model(ctx.db.reader(), filter, &ctx.money.table.breaks()).await?)
+}
+
 /// Cost each model on its own, in the order the models arrive.
-fn model_costs(ctx: &Context, per_model: &[(Option<String>, Totals)]) -> Vec<Measured<Money>> {
+fn model_costs(
+    ctx: &Context,
+    per_model: &[(Option<String>, Totals)],
+    slices: &[usage::Slice],
+) -> Vec<Measured<Money>> {
     per_model
         .iter()
-        .map(|(model, totals)| {
-            ctx.cost().present(aum_engine::prices::cost_of_slices(
-                std::iter::once((model, totals)),
+        .map(|(model, _)| {
+            ctx.cost().present(aum_engine::prices::cost_of_model(
+                model.as_deref(),
+                slices,
                 &ctx.money.table,
             ))
         })
         .collect()
 }
 
-fn model_table(ctx: &Context, rows: &[crate::sort::Row<'_>], limit: usize) -> String {
+fn model_table(
+    ctx: &Context,
+    rows: &[crate::sort::Row<'_>],
+    slices: &[usage::Slice],
+    limit: usize,
+) -> String {
     let c = ctx.colour;
     let uncosted = Measured::unavailable(aum_contract::UnavailableReason::NoTelemetry {
         detail: "not costed".to_owned(),
@@ -431,11 +460,24 @@ fn model_table(ctx: &Context, rows: &[crate::sort::Row<'_>], limit: usize) -> St
         ("cost", Align::Right),
         ("rate /Mtok (USD)", Align::Left),
     ]);
+    let mut spans_a_change = false;
     for r in rows.iter().take(limit) {
         let cost = r.cost.unwrap_or(&uncosted);
         // A row whose model was never reported looks up nothing, which is the
         // right answer: an unnamed model cannot have a price.
-        let rate = ctx.money.table.lookup(r.label).map_or_else(
+        let used = aum_engine::prices::rates_used(r.label, slices, &ctx.money.table);
+        // How many earlier rates the cost depends on: none when the latest
+        // would reproduce it alone, however many versions took part, and
+        // otherwise the different rates that came before it.
+        let earlier = if aum_engine::prices::one_rate_reproduces(r.label, slices, &ctx.money.table)
+        {
+            0
+        } else {
+            let mut distinct: Vec<&aum_pricing::Rates> = used.iter().map(|p| &p.rates).collect();
+            distinct.dedup();
+            distinct.len().saturating_sub(1)
+        };
+        let rate = used.last().map_or_else(
             || {
                 if c {
                     format!(
@@ -452,10 +494,16 @@ fn model_table(ctx: &Context, rows: &[crate::sort::Row<'_>], limit: usize) -> St
             // converted. Showing "€5 in" would claim the provider charges
             // five euros, which it does not.
             |p| {
+                spans_a_change |= earlier > 0;
                 format!(
-                    "${} in / ${} out",
+                    "${} in / ${} out{}",
                     fmt::rate(p.rates.input_per_mtok),
-                    fmt::rate(p.rates.output_per_mtok)
+                    fmt::rate(p.rates.output_per_mtok),
+                    if earlier > 0 {
+                        format!(" (+{earlier} earlier)")
+                    } else {
+                        String::new()
+                    }
                 )
             },
         );
@@ -468,7 +516,17 @@ fn model_table(ctx: &Context, rows: &[crate::sort::Row<'_>], limit: usize) -> St
             rate,
         ]);
     }
-    t.render(c)
+    let mut out = t.render(c);
+    if spans_a_change {
+        // A single rate beside a cost that no single rate reproduces would
+        // invite exactly the check that then fails.
+        out.push_str(&dim(
+            "\n  (+n earlier): the range spans a price change. The rate shown priced the latest \
+             usage; what came before it was charged the rate in force at the time.\n",
+            c,
+        ));
+    }
+    out
 }
 
 fn warn_unpriced(ctx: &Context, per_model: &[(Option<String>, Totals)]) {

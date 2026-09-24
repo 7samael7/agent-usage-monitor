@@ -426,14 +426,17 @@ dishonesty this application could commit. Every screen and every table that show
 line `actually billed — subscription, not billed per token`, and no total anywhere is labelled just
 "cost".
 
-Prices are versioned and **append-only**. A price edit creates a new version and closes the previous
-one, so usage recorded in March still displays March's rates; recalculation is an explicit action. An
+Prices are versioned and **append-only**. A price edit creates a new version, and usage is costed at
+the version in force when it happened — the per-model usage sums are cut wherever a price changes — so
+usage recorded in March still displays March's rates after an August change. An
 unknown model yields `Unavailable { NoPricingForModel }` and a footer saying how many models lack a rate
 and that `aum price` sets one — never a substituted "similar" model's rate.
 
 Rates for the models these agents currently run are seeded into the binary, each carrying the page and
 date it was read from, so a machine with an empty database still prices its history. A rate entered
-with `aum price` lives only in that machine's database and beats the seed for the same model. The
+with `aum price` lives only in that machine's database and takes over from the moment it is entered:
+it beats a seeded version that begins at the same instant, and one that begins later takes over from
+it in turn. The
 distinction is worth stating because it is invisible until it bites: identical binaries on two machines
 agree, but a machine with an *older* binary prices only what its seed knew about.
 
