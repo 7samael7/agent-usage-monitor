@@ -6,7 +6,9 @@
 # in the pull request (`make bump`), and `ci` refuses one that forgot. A merge
 # that still arrives with a released version fails here, out loud, rather than
 # releasing nothing quietly. Re-running on the commit that is already the
-# release is a no-op.
+# release is a no-op, except for the formula: the Homebrew bump runs whenever
+# the tap is behind the released version, so a release that could not reach the
+# tap at the time is repaired by re-running this workflow rather than by hand.
 #
 # The build itself is `build.yml`, the same one pull requests run, so a merge
 # never builds anything for the first time. Nothing is tagged until every
@@ -95,10 +97,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "v$VERSION" --verify-tag --latest --title "v$VERSION" --generate-notes dist/*
 
+  # Not gated on a fresh release. The formula has to match the released version,
+  # and it can fall behind it for reasons outside this run: v0.1.2 shipped on
+  # 2026-09-10 with no token here to carry it, and the tap sat on 0.1.1 for
+  # eleven days. Running on an already-released commit too makes a re-run the
+  # repair, and the step below stops on its own when the formula is current.
+  #
+  # The condition asks for a tag that exists: either this run published one, or
+  # the version was already released. A skipped release job is not enough on its
+  # own, because a failed build skips it too, and pointing the formula at a tag
+  # that was never pushed is worse than leaving it where it is.
   homebrew:
     name: Bump the Homebrew formula
     needs: [version, release]
-    if: needs.version.outputs.release == 'true'
+    if: >-
+      always() && needs.version.result == 'success'
+      && (needs.release.result == 'success' || needs.version.outputs.release == 'false')
     runs-on: ubuntu-latest
     env:
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -133,4 +147,4 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit --quiet --all --message "aum $VERSION"
-          git push
+          git push origin HEAD:main
