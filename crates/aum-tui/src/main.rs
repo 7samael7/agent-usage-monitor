@@ -199,7 +199,10 @@ async fn set_price(
         fmt::rate(saved.rates.input_per_mtok),
         fmt::rate(saved.rates.output_per_mtok)
     );
-    println!("this is a new version — anything already costed keeps the rate it was costed with");
+    println!(
+        "this is a new version — it applies from now on, and earlier usage keeps the rate in \
+         force when it happened, or takes this one where there was none"
+    );
     Ok(())
 }
 

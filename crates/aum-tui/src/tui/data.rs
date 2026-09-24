@@ -47,14 +47,18 @@ impl Data {
         let models = usage::by_model(db, filter).await?;
         let adapters = usage::by_adapter(db, filter).await?;
 
-        let day_slices = usage::by_day_model(db, filter).await?;
+        // Every figure below is costed from slices cut where a price changes,
+        // so each is charged the rate in force when it happened.
+        let breaks = ctx.money.table.breaks();
+
+        let day_slices = usage::by_day_model(db, filter, &breaks).await?;
         let daily = usage::fold_by_bucket(&day_slices);
         let daily_cost = aum_engine::prices::cost_by_bucket(&day_slices, &ctx.money.table)
             .into_iter()
             .map(|(at, m)| (at, ctx.cost().present(m)))
             .collect();
 
-        let hour_slices = usage::by_hour_model(db, filter).await?;
+        let hour_slices = usage::by_hour_model(db, filter, &breaks).await?;
         let hourly = usage::fold_by_bucket(&hour_slices);
         let hourly_cost = aum_engine::prices::cost_by_bucket(&hour_slices, &ctx.money.table)
             .into_iter()
@@ -62,14 +66,15 @@ impl Data {
             .collect();
 
         let cost = ctx.cost().present(aum_engine::prices::cost_of_slices(
-            models.iter().map(|(m, t)| (m, t)),
+            &day_slices,
             &ctx.money.table,
         ));
         let model_cost = models
             .iter()
-            .map(|(m, t)| {
-                ctx.cost().present(aum_engine::prices::cost_of_slices(
-                    std::iter::once((m, t)),
+            .map(|(m, _)| {
+                ctx.cost().present(aum_engine::prices::cost_of_model(
+                    m.as_deref(),
+                    &day_slices,
                     &ctx.money.table,
                 ))
             })
@@ -92,8 +97,9 @@ impl Data {
             until: None,
             adapter: filter.adapter.clone(),
         };
+        // Tokens only, so there is nothing to cut at.
         let calendar = calendar(
-            &usage::fold_by_bucket(&usage::by_day_model(db, &year_filter).await?),
+            &usage::fold_by_bucket(&usage::by_day_model(db, &year_filter, &[]).await?),
             year_ago,
         );
 

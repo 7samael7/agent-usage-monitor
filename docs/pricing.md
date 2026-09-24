@@ -60,14 +60,16 @@ Two places, and a rate says which:
 
 - **the seed**, `crates/aum-pricing/seed/models.json`, compiled into the binary.
   Every entry carries the page it was read from and the day it was read. This is
-  why a fresh install prices its history without being told anything.
+  why a fresh install prices its history without being told anything. A model
+  whose price has changed keeps every version, each from the day it took effect.
 - **the local database**, from `aum price`. It does not travel between machines,
   which is worth knowing before wondering why a second machine shows
   `not priced`: either it has an older build, or the model is newer than it.
 
-A rate you entered beats a seeded one for the same model, always. Seeded rates go
-stale — providers change prices, and nothing here fetches an update — so the
-entry is the correction mechanism rather than an edge case.
+Seeded rates go stale — providers change prices, and nothing here fetches an
+update — so an entry is the correction mechanism rather than an edge case. It
+takes over from the moment you make it, as described under
+[Versioning](#versioning).
 
 **Pricing tokens the provider did not classify.** Codex's compaction calls
 report a total with no input/output split. Those tokens are counted and priced
@@ -79,17 +81,41 @@ whose buckets are disjoint by construction. Charging cached input twice
 
 ## Versioning
 
-Prices are **append-only**. Correcting one adds a version with a new
-`effective_from` and closes the previous one; nothing is edited in place. Each
-cost row pins the pricing version it used, so usage recorded in March still
-displays March's rates in August, and recalculating is an explicit action.
+Prices are **append-only**. A new figure adds a version with its own
+`effective_from`; nothing is edited in place, and the old version stays.
 
-A rate you entered yourself beats a seeded one at equal specificity, because
-someone who has typed in a rate knows something the seed does not:
+**Usage is charged the rate in force when it happened.** Every version of a
+model, shipped or entered, sits on one timeline, and each applies from its
+`effective_from` until the next one begins. A request made in March keeps
+March's rate after an August change, and last month's total does not move
+because a provider started a promotion this month. Nothing is stored to make
+that true: a cost is computed when it is shown, from the version whose period
+contains the request. Usage is summed per model per day before it is priced, so
+the sums are cut wherever a price changes, and a day a price changed in is
+priced in two parts.
+
+Three rules decide where a version's period starts and ends:
+
+- **A rate you enter begins when you enter it.** What happened before keeps the
+  rate that was in force then.
+- **Usage older than every version takes the earliest.** That is what lets a
+  rate entered today price a model that has been running unpriced for weeks:
+  that usage had no rate to keep, so there is nothing for the new one to
+  overwrite.
+- **At the same instant, your entry beats a shipped version**, because someone
+  who has typed in a rate knows something the seed does not. A shipped version
+  that begins *after* your entry takes over from its start: it records a price
+  change your entry could not have known about, so a release that catches up
+  with a price cut applies it without anyone re-typing anything.
 
 ```bash
 aum price gpt-5.6-terra --input 2.00 --output 12.00 --note "openai pricing page, 2026-08-17"
 ```
+
+The rate printed beside a model in `aum models` and `aum overview` is the one
+that priced its latest usage in the range. `(+1 earlier)` after it says the
+range spans a price change, so no single rate reproduces the cost beside it;
+`--json` lists every rate used under `earlier_rates`.
 
 `--cache-read` defaults to the input rate, which is both providers' documented
 behaviour. It does **not** default to zero: pricing cache reads as free would

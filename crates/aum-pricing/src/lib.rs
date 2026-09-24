@@ -1,6 +1,6 @@
 //! # `aum-pricing` — what usage would have cost
 //!
-//! Three rules shape everything here.
+//! Four rules shape everything here.
 //!
 //! **No floats.** `rust_decimal` end to end. A cent cannot be represented in
 //! binary floating point, and the amounts involved are frequently in the 1e-7
@@ -13,10 +13,16 @@
 //!
 //! **Never substitute a price.** A model with no entry yields
 //! [`CostOutcome::Unavailable`], not a "similar" model's rate and not zero.
-//! This is not hypothetical: `claude-opus-5`, `claude-fable-5`, `gpt-5.6-sol`
-//! and `gpt-5.6-terra` all appear in this machine's real data and in no public
-//! price list. Defaulting them to zero would show the heaviest sessions on the
-//! machine as free.
+//! This is not hypothetical: a new model reaches the transcripts before the
+//! price list shipped here knows it — `gpt-6-astra`, `claude-fable-5-1` and
+//! `claude-opus-5-5` all ran unpriced on this machine for a while — and the
+//! heaviest sessions are usually the ones on the newest model. Defaulting them
+//! to zero would show those as free.
+//!
+//! **Charge the rate in force at the time.** Prices change, and usage is priced
+//! at the version that applied when it happened, never at today's. Repricing
+//! history with the current rate would move last month's totals every time a
+//! provider ran a promotion. See [`PriceTable::lookup_at`].
 
 pub mod fx;
 pub mod nano;
@@ -37,6 +43,23 @@ fn per_million(tokens: u64, rate_per_mtok: Decimal) -> Decimal {
         .unwrap_or(Decimal::ZERO)
 }
 
+/// Usage to be priced: how much, of which model, when, and from how many
+/// requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Priceable {
+    pub usage: TokenUsage,
+    /// `None` where the transcript never named a model. Not guessed.
+    pub model_id: Option<String>,
+    /// An instant inside the usage, in the fixed-width form `aum_db::to_sql_time`
+    /// writes. The rate in force then is the rate charged, so a caller that
+    /// sums requests before pricing them must not let one sum straddle a price
+    /// change — [`PriceTable::breaks`] lists them.
+    pub at: String,
+    /// How many requests the usage came from, so that an incomplete total can
+    /// say how much of it went unpriced.
+    pub requests: u64,
+}
+
 /// The result of trying to price one measurement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CostOutcome {
@@ -51,14 +74,19 @@ pub enum CostOutcome {
     Unavailable(UnavailableReason),
 }
 
-/// Cost one request's worth of usage.
+/// Cost one request's worth of usage, at the rate in force at `at`.
 ///
 /// The signature takes a [`TokenUsage`] and nothing else that could carry a
 /// provider's raw fields: the disjoint partition is the only way in, so the
 /// double-counting mistakes that would otherwise be available here — charging
 /// cached input twice, billing reasoning on top of output — are not expressible.
 #[must_use]
-pub fn cost_of(usage: &TokenUsage, model_id: Option<&str>, table: &PriceTable) -> CostOutcome {
+pub fn cost_of(
+    usage: &TokenUsage,
+    model_id: Option<&str>,
+    at: &str,
+    table: &PriceTable,
+) -> CostOutcome {
     let Some(model_id) = model_id else {
         // A tailer that resumed mid-file genuinely does not know the model.
         return CostOutcome::Unavailable(UnavailableReason::ModelUnknown {
@@ -76,7 +104,7 @@ pub fn cost_of(usage: &TokenUsage, model_id: Option<&str>, table: &PriceTable) -
         };
     }
 
-    let Some(pricing) = table.lookup(model_id) else {
+    let Some(pricing) = table.lookup_at(model_id, at) else {
         return CostOutcome::Unavailable(UnavailableReason::NoPricingForModel {
             model_id: model_id.to_owned(),
         });
@@ -118,7 +146,7 @@ pub fn cost_of(usage: &TokenUsage, model_id: Option<&str>, table: &PriceTable) -
 /// Returns a [`Measured`] so the caller cannot lose the distinction between
 /// "this cost nothing" and "this could not be priced".
 #[must_use]
-pub fn cost_of_many(items: &[(TokenUsage, Option<String>)], table: &PriceTable) -> Measured<Money> {
+pub fn cost_of_many(items: &[Priceable], table: &PriceTable) -> Measured<Money> {
     if items.is_empty() {
         return Measured::unavailable(UnavailableReason::NoTelemetry {
             detail: "Nothing has been measured yet.".to_owned(),
@@ -126,19 +154,23 @@ pub fn cost_of_many(items: &[(TokenUsage, Option<String>)], table: &PriceTable) 
     }
 
     let mut total = Decimal::ZERO;
-    let mut priced = 0_u32;
+    let mut priced_items = 0_usize;
+    let mut priced_requests = 0_u64;
+    let mut requests = 0_u64;
     let mut unpriceable_tokens = 0_u64;
     let mut first_missing: Option<UnavailableReason> = None;
 
-    for (usage, model) in items {
-        match cost_of(usage, model.as_deref(), table) {
+    for item in items {
+        requests = requests.saturating_add(item.requests);
+        match cost_of(&item.usage, item.model_id.as_deref(), &item.at, table) {
             CostOutcome::Priced {
                 amount,
                 unpriceable_tokens: skipped,
                 ..
             } => {
                 total += amount;
-                priced = priced.saturating_add(1);
+                priced_items += 1;
+                priced_requests = priced_requests.saturating_add(item.requests);
                 unpriceable_tokens = unpriceable_tokens.saturating_add(skipped);
             }
             CostOutcome::Unavailable(reason) => {
@@ -149,25 +181,25 @@ pub fn cost_of_many(items: &[(TokenUsage, Option<String>)], table: &PriceTable) 
         }
     }
 
-    let count = u32::try_from(items.len()).unwrap_or(u32::MAX);
-
-    if priced == 0 {
+    if priced_items == 0 {
         return Measured::unavailable(first_missing.unwrap_or(UnavailableReason::NoTelemetry {
             detail: "None of these requests could be priced.".to_owned(),
         }));
     }
 
     // Our own calculation from our own table, so `Calculated` rather than
-    // `Exact` — the provider did not tell us this number.
-    if priced == count && unpriceable_tokens == 0 {
+    // `Exact` — the provider did not tell us this number. Completeness is
+    // judged by item rather than by the request counts, so an item that claims
+    // no requests still cannot be dropped silently.
+    if priced_items == items.len() && unpriceable_tokens == 0 {
         return Measured::calculated(Money::new(total), MeasurementSource::ApplicationTelemetry);
     }
 
     let mut why = Vec::new();
-    if priced < count {
+    if priced_items < items.len() {
         why.push(format!(
-            "{} of {count} requests have no price for their model",
-            count.saturating_sub(priced)
+            "{} of {requests} requests have no price for their model",
+            requests.saturating_sub(priced_requests)
         ));
     }
     if unpriceable_tokens > 0 {
@@ -177,7 +209,13 @@ pub fn cost_of_many(items: &[(TokenUsage, Option<String>)], table: &PriceTable) 
         ));
     }
 
-    Measured::partial(Money::new(total), priced, count, why.join("; "))
+    let count = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
+    Measured::partial(
+        Money::new(total),
+        count(priced_requests),
+        count(requests),
+        why.join("; "),
+    )
 }
 
 #[cfg(test)]
@@ -190,6 +228,18 @@ mod tests {
 
     fn dec(s: &str) -> Decimal {
         Decimal::from_str(s).unwrap()
+    }
+
+    /// When the requests below happened. Every version in `table()` is older.
+    const AT: &str = "2026-08-13T09:00:00.000Z";
+
+    fn item(usage: TokenUsage, model: &str) -> Priceable {
+        Priceable {
+            usage,
+            model_id: Some(model.to_owned()),
+            at: AT.to_owned(),
+            requests: 1,
+        }
     }
 
     /// A table with the illustrative rates used throughout the docs.
@@ -271,7 +321,7 @@ mod tests {
         // Verified independently. The worked example in the original design
         // note read 1.0885275, which dropped its own input line.
         let CostOutcome::Priced { amount, .. } =
-            cost_of(&real_claude(), Some("claude-opus-5"), &table())
+            cost_of(&real_claude(), Some("claude-opus-5"), AT, &table())
         else {
             panic!("expected a price")
         };
@@ -286,7 +336,7 @@ mod tests {
         let t = table();
         let CostOutcome::Priced {
             amount: correct, ..
-        } = cost_of(&usage, Some("claude-opus-5"), &t)
+        } = cost_of(&usage, Some("claude-opus-5"), AT, &t)
         else {
             panic!()
         };
@@ -309,7 +359,8 @@ mod tests {
         //   input_fresh  5,202 @ 1.25  = 0.00650250
         //   cache_read  11,008 @ 0.125 = 0.00137600
         //   output         164 @ 10.00 = 0.00164000
-        let CostOutcome::Priced { amount, .. } = cost_of(&real_codex(), Some("gpt-5.5"), &table())
+        let CostOutcome::Priced { amount, .. } =
+            cost_of(&real_codex(), Some("gpt-5.5"), AT, &table())
         else {
             panic!("expected a price")
         };
@@ -320,7 +371,8 @@ mod tests {
     fn reasoning_is_not_billed_on_top_of_output() {
         // The 4% trap. Reasoning is a subset of output and is already counted.
         let usage = real_codex();
-        let CostOutcome::Priced { amount, .. } = cost_of(&usage, Some("gpt-5.5"), &table()) else {
+        let CostOutcome::Priced { amount, .. } = cost_of(&usage, Some("gpt-5.5"), AT, &table())
+        else {
             panic!()
         };
         let double_counted = amount + per_million(usage.reasoning().unwrap(), dec("10.00"));
@@ -340,7 +392,8 @@ mod tests {
         assert_eq!(usage.input_fresh(), 5_202);
         assert_eq!(usage.cache_read(), 11_008);
 
-        let CostOutcome::Priced { amount, .. } = cost_of(&usage, Some("gpt-5.5"), &table()) else {
+        let CostOutcome::Priced { amount, .. } = cost_of(&usage, Some("gpt-5.5"), AT, &table())
+        else {
             panic!()
         };
         let naive = per_million(16_210, dec("1.25"))
@@ -357,7 +410,7 @@ mod tests {
         // Live on this machine: gpt-5.6-sol and claude-opus-5 appear in real
         // data and in no public price list. Defaulting to zero would show the
         // heaviest sessions here as costing nothing.
-        let outcome = cost_of(&real_codex(), Some("gpt-5.6-sol"), &table());
+        let outcome = cost_of(&real_codex(), Some("gpt-5.6-sol"), AT, &table());
         assert!(matches!(
             outcome,
             CostOutcome::Unavailable(UnavailableReason::NoPricingForModel { .. })
@@ -367,14 +420,14 @@ mod tests {
     #[test]
     fn a_request_with_no_known_model_is_unavailable() {
         assert!(matches!(
-            cost_of(&real_codex(), None, &table()),
+            cost_of(&real_codex(), None, AT, &table()),
             CostOutcome::Unavailable(UnavailableReason::ModelUnknown { .. })
         ));
     }
 
     #[test]
     fn a_locally_generated_message_costs_nothing_and_says_so() {
-        let outcome = cost_of(&TokenUsage::default(), Some("<synthetic>"), &table());
+        let outcome = cost_of(&TokenUsage::default(), Some("<synthetic>"), AT, &table());
         assert!(matches!(
             outcome,
             CostOutcome::Priced { amount, .. } if amount == Decimal::ZERO
@@ -389,7 +442,7 @@ mod tests {
             amount,
             unpriceable_tokens,
             ..
-        } = cost_of(&usage, Some("gpt-5.5"), &table())
+        } = cost_of(&usage, Some("gpt-5.5"), AT, &table())
         else {
             panic!()
         };
@@ -401,8 +454,8 @@ mod tests {
     fn a_task_of_priceable_requests_is_calculated_not_exact() {
         // We computed it from our own table; the provider never said it.
         let items = vec![
-            (real_claude(), Some("claude-opus-5".to_owned())),
-            (real_codex(), Some("gpt-5.5".to_owned())),
+            item(real_claude(), "claude-opus-5"),
+            item(real_codex(), "gpt-5.5"),
         ];
         let m = cost_of_many(&items, &table());
         assert_eq!(m.display_kind(), DisplayKind::Calculated);
@@ -415,8 +468,8 @@ mod tests {
     #[test]
     fn one_unpriced_model_makes_the_task_total_a_floor() {
         let items = vec![
-            (real_claude(), Some("claude-opus-5".to_owned())),
-            (real_codex(), Some("gpt-5.6-sol".to_owned())),
+            item(real_claude(), "claude-opus-5"),
+            item(real_codex(), "gpt-5.6-sol"),
         ];
         let m = cost_of_many(&items, &table());
         assert_eq!(m.display_kind(), DisplayKind::Partial);
@@ -425,7 +478,7 @@ mod tests {
 
     #[test]
     fn a_task_where_nothing_can_be_priced_is_unavailable_not_zero() {
-        let items = vec![(real_codex(), Some("gpt-5.6-sol".to_owned()))];
+        let items = vec![item(real_codex(), "gpt-5.6-sol")];
         let m = cost_of_many(&items, &table());
         assert_eq!(m.value, None);
         assert_eq!(m.display_kind(), DisplayKind::Unavailable);
@@ -444,12 +497,10 @@ mod tests {
         .unwrap()
         .usage;
 
-        let items: Vec<_> = (0..10_000)
-            .map(|_| (tiny, Some("gpt-5.5".to_owned())))
-            .collect();
+        let items: Vec<_> = (0..10_000).map(|_| item(tiny, "gpt-5.5")).collect();
         let exact = cost_of_many(&items, &table()).value.unwrap().amount();
 
-        let per_request = match cost_of(&tiny, Some("gpt-5.5"), &table()) {
+        let per_request = match cost_of(&tiny, Some("gpt-5.5"), AT, &table()) {
             CostOutcome::Priced { amount, .. } => amount,
             CostOutcome::Unavailable(_) => panic!(),
         };
@@ -473,5 +524,82 @@ mod tests {
     #[test]
     fn an_empty_task_is_unavailable_rather_than_zero() {
         assert_eq!(cost_of_many(&[], &table()).value, None);
+    }
+
+    #[test]
+    fn each_item_is_priced_at_the_rate_in_force_when_it_happened() {
+        // One million input tokens in March at $10, and one million in
+        // September after a rise to $15. Today's rate for both would say $30.
+        let version = |id: &str, input: &str, from: &str| ModelPricing {
+            version_id: id.to_owned(),
+            model_id: "m".to_owned(),
+            rates: Rates {
+                input_per_mtok: dec(input),
+                output_per_mtok: dec("50.00"),
+                cache_read_per_mtok: dec("1.00"),
+                cache_write_5m_per_mtok: dec(input),
+                cache_write_1h_per_mtok: dec(input),
+            },
+            effective_from: from.to_owned(),
+            source: "seed".to_owned(),
+            note: None,
+        };
+        let table = PriceTable::from_entries(vec![
+            version("march", "10.00", "2026-03-01T00:00:00.000Z"),
+            version("august", "15.00", "2026-08-01T00:00:00.000Z"),
+        ]);
+        let million = TokenUsage::from_openai(&OpenAiUsage {
+            input_tokens: Some(1_000_000),
+            output_tokens: Some(0),
+            total_tokens: Some(1_000_000),
+            ..Default::default()
+        })
+        .unwrap()
+        .usage;
+        let at = |when: &str| Priceable {
+            usage: million,
+            model_id: Some("m".to_owned()),
+            at: when.to_owned(),
+            requests: 1,
+        };
+
+        let m = cost_of_many(
+            &[
+                at("2026-03-15T09:00:00.000Z"),
+                at("2026-09-15T09:00:00.000Z"),
+            ],
+            &table,
+        );
+        assert_eq!(m.value.unwrap().amount(), dec("25"));
+    }
+
+    #[test]
+    fn an_incomplete_total_counts_requests_rather_than_items() {
+        // Callers hand over sums of many requests. "1 of 2" would describe the
+        // sums; what went unpriced is two requests out of five.
+        let mut priced = item(real_codex(), "gpt-5.5");
+        priced.requests = 3;
+        let mut unpriced = item(real_codex(), "gpt-5.6-sol");
+        unpriced.requests = 2;
+
+        let m = cost_of_many(&[priced, unpriced], &table());
+        let aum_contract::Accuracy::Partial {
+            measured,
+            total,
+            reason,
+        } = m.accuracy
+        else {
+            panic!("expected a floor, got {:?}", m.accuracy)
+        };
+        assert_eq!((measured, total), (3, 5));
+        assert!(reason.contains("2 of 5 requests"), "{reason}");
+    }
+
+    #[test]
+    fn an_item_claiming_no_requests_is_still_not_dropped_silently() {
+        let mut unpriced = item(real_codex(), "gpt-5.6-sol");
+        unpriced.requests = 0;
+        let m = cost_of_many(&[item(real_codex(), "gpt-5.5"), unpriced], &table());
+        assert_eq!(m.display_kind(), DisplayKind::Partial);
     }
 }

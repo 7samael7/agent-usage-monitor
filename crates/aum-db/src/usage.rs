@@ -10,6 +10,11 @@
 //! that matches no actual rate. Cost is computed per model and then added up;
 //! the shape of these return types is what forces that.
 //!
+//! **And a slice never straddles a price change.** The caller passes the
+//! instants at which prices change, and each bucket is split at any that fall
+//! inside it, because one slice is priced at one rate. This crate does not know
+//! what a price is — only where the caller said the cuts go.
+//!
 //! Failed requests are excluded from counts and sums throughout, and reported
 //! separately. A failed call has no tokens — folding it in would overstate the
 //! successes while making the two numbers contradict each other.
@@ -224,47 +229,80 @@ pub async fn failed_count(pool: &Pool<Sqlite>, filter: &Filter) -> Result<i64> {
     Ok(row.try_get(0)?)
 }
 
-/// One bucket of one model's usage.
+/// One bucket of one model's usage, on one side of every price change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slice {
-    /// Bucket label: `YYYY-MM-DD` for days, `YYYY-MM-DDTHH` for hours.
+    /// Bucket label: `YYYY-MM-DD` for days, `YYYY-MM-DDTHH` for hours. A bucket
+    /// a price change falls inside comes back as more than one slice with the
+    /// same label.
     pub at: String,
     /// `None` where the transcript never named a model. Not guessed.
     pub model_id: Option<String>,
+    /// When the earliest request in the slice happened. The slice lies wholly
+    /// between two of the breaks it was cut at, so the rate in force at this
+    /// instant is the rate for all of it.
+    pub first_at: String,
     pub totals: Totals,
 }
 
-async fn grouped(pool: &Pool<Sqlite>, filter: &Filter, fmt: &str) -> Result<Vec<Slice>> {
+async fn grouped(
+    pool: &Pool<Sqlite>,
+    filter: &Filter,
+    fmt: &str,
+    breaks: &[String],
+) -> Result<Vec<Slice>> {
+    // Which side of the breaks a request falls on, as one number: how many of
+    // them are at or before it. Requests that agree on it share every rate.
+    let side = if breaks.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", vec!["(occurred_at >= ?)"; breaks.len()].join(" + "))
+    };
     let sql = format!(
-        "SELECT strftime('{fmt}', occurred_at) AS at, model_id, {SELECT_TOTALS}
+        "SELECT strftime('{fmt}', occurred_at) AS at, model_id,
+                MIN(occurred_at) AS first_at, {SELECT_TOTALS}
            FROM ai_request{}
-          GROUP BY at, model_id
-          ORDER BY at",
+          GROUP BY at, model_id{side}
+          ORDER BY at, model_id, first_at",
         filter.predicate()
     );
-    let rows = filter.bind(sqlx::query(&sql)).fetch_all(pool).await?;
+    let mut q = filter.bind(sqlx::query(&sql));
+    for b in breaks {
+        q = q.bind(b);
+    }
+    let rows = q.fetch_all(pool).await?;
     rows.iter()
         .map(|r| {
             Ok(Slice {
                 at: r.try_get("at")?,
                 model_id: r.try_get("model_id")?,
+                first_at: r.try_get("first_at")?,
                 totals: read_totals(r)?,
             })
         })
         .collect()
 }
 
-/// Per day, per model.
+/// Per day, per model, cut at `breaks`.
 ///
 /// The primary aggregation: a daily cost is the sum of each model's cost that
-/// day, never the day's blended tokens at one rate.
-pub async fn by_day_model(pool: &Pool<Sqlite>, filter: &Filter) -> Result<Vec<Slice>> {
-    grouped(pool, filter, "%Y-%m-%d").await
+/// day, never the day's blended tokens at one rate. Pass the price table's
+/// breaks when the slices will be priced, and none when only tokens are wanted.
+pub async fn by_day_model(
+    pool: &Pool<Sqlite>,
+    filter: &Filter,
+    breaks: &[String],
+) -> Result<Vec<Slice>> {
+    grouped(pool, filter, "%Y-%m-%d", breaks).await
 }
 
-/// Per hour, per model.
-pub async fn by_hour_model(pool: &Pool<Sqlite>, filter: &Filter) -> Result<Vec<Slice>> {
-    grouped(pool, filter, "%Y-%m-%dT%H").await
+/// Per hour, per model, cut at `breaks`.
+pub async fn by_hour_model(
+    pool: &Pool<Sqlite>,
+    filter: &Filter,
+    breaks: &[String],
+) -> Result<Vec<Slice>> {
+    grouped(pool, filter, "%Y-%m-%dT%H", breaks).await
 }
 
 /// Per model over the whole range, busiest first.
@@ -381,7 +419,9 @@ mod tests {
         )
         .await;
 
-        let slices = by_day_model(db.reader(), &Filter::all()).await.unwrap();
+        let slices = by_day_model(db.reader(), &Filter::all(), &[])
+            .await
+            .unwrap();
         assert_eq!(slices.len(), 2, "one row per model, not one per day");
         assert!(slices.iter().all(|s| s.at == "2026-08-13"));
 
@@ -483,13 +523,21 @@ mod tests {
         insert(&db, "2026-08-13T09:45:00Z", "m", "claude_code", usage(2, 0)).await;
         insert(&db, "2026-08-13T11:00:00Z", "m", "claude_code", usage(4, 0)).await;
 
-        let hours = fold_by_bucket(&by_hour_model(db.reader(), &Filter::all()).await.unwrap());
+        let hours = fold_by_bucket(
+            &by_hour_model(db.reader(), &Filter::all(), &[])
+                .await
+                .unwrap(),
+        );
         assert_eq!(hours.len(), 2);
         assert_eq!(hours[0].0, "2026-08-13T09");
         assert_eq!(hours[0].1.input_fresh, 3);
         assert_eq!(hours[1].1.input_fresh, 4);
 
-        let days = fold_by_bucket(&by_day_model(db.reader(), &Filter::all()).await.unwrap());
+        let days = fold_by_bucket(
+            &by_day_model(db.reader(), &Filter::all(), &[])
+                .await
+                .unwrap(),
+        );
         assert_eq!(days.len(), 1);
         assert_eq!(days[0].1.input_fresh, 7);
     }
@@ -545,7 +593,9 @@ mod tests {
         )
         .await;
 
-        let slices = by_day_model(db.reader(), &Filter::all()).await.unwrap();
+        let slices = by_day_model(db.reader(), &Filter::all(), &[])
+            .await
+            .unwrap();
         assert!(slices.iter().all(|s| s.totals.reasoning.is_none()));
         assert_eq!(fold(slices.iter().map(|s| &s.totals)).reasoning, None);
     }
@@ -579,7 +629,7 @@ mod tests {
         assert_eq!(t.requests, 0);
         assert_eq!(t.reasoning, None);
         assert!(
-            by_day_model(db.reader(), &Filter::all())
+            by_day_model(db.reader(), &Filter::all(), &[])
                 .await
                 .unwrap()
                 .is_empty()
@@ -607,5 +657,58 @@ mod tests {
 
         let adapters = by_adapter(db.reader(), &Filter::all()).await.unwrap();
         assert_eq!(adapters[0].0, "claude_code");
+    }
+
+    #[tokio::test]
+    async fn a_bucket_is_cut_where_a_price_changes() {
+        // One slice is priced at one rate. A day a price changed in comes back
+        // as two slices for the same model, each dated by its first request, so
+        // the morning keeps the old rate and the evening pays the new one.
+        let db = db().await;
+        insert(&db, "2026-08-21T09:00:00Z", "m", "codex", usage(1, 0)).await;
+        insert(&db, "2026-08-21T10:00:00Z", "m", "codex", usage(2, 0)).await;
+        insert(&db, "2026-08-21T15:00:00Z", "m", "codex", usage(4, 0)).await;
+
+        let change = "2026-08-21T12:00:00.000Z".to_owned();
+        let cut = by_day_model(db.reader(), &Filter::all(), &[change])
+            .await
+            .unwrap();
+        assert_eq!(cut.len(), 2);
+        assert!(cut.iter().all(|s| s.at == "2026-08-21"));
+        assert_eq!(cut[0].first_at, "2026-08-21T09:00:00.000Z");
+        assert_eq!(cut[0].totals.input_fresh, 3);
+        assert_eq!(cut[1].first_at, "2026-08-21T15:00:00.000Z");
+        assert_eq!(cut[1].totals.input_fresh, 4);
+
+        // Folded for a chart, it is one day again.
+        assert_eq!(
+            fold_by_bucket(&cut),
+            fold_by_bucket(
+                &by_day_model(db.reader(), &Filter::all(), &[])
+                    .await
+                    .unwrap()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn breaks_combine_with_the_range_filter() {
+        // The breaks are bound after the filter's own values; getting that
+        // order wrong would compare dates against an adapter name.
+        let db = db().await;
+        insert(&db, "2026-08-20T09:00:00Z", "m", "codex", usage(1, 0)).await;
+        insert(&db, "2026-08-21T09:00:00Z", "m", "codex", usage(2, 0)).await;
+        insert(&db, "2026-08-22T09:00:00Z", "m", "claude_code", usage(4, 0)).await;
+
+        let f = Filter::all()
+            .since("2026-08-20T12:00:00.000Z")
+            .adapter("codex");
+        let breaks = [
+            "2026-08-21T00:00:00.000Z".to_owned(),
+            "2026-08-22T00:00:00.000Z".to_owned(),
+        ];
+        let slices = by_hour_model(db.reader(), &f, &breaks).await.unwrap();
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].totals.input_fresh, 2);
     }
 }

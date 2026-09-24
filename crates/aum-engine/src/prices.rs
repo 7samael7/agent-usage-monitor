@@ -6,10 +6,11 @@
 //! provider's pricing page and typed in a figure knows something a shipped
 //! default does not.
 //!
-//! Every model this machine actually runs — `claude-opus-5`, `claude-fable-5`,
-//! `gpt-5.6-sol` — is newer than any public price list. Without this path those
-//! models are permanently uncosted; with it, the honest "no price for this
-//! model" becomes something the user can answer rather than only be told.
+//! The seed goes stale — providers change prices and launch models, and nothing
+//! here fetches an update — so a model can run for weeks before a release
+//! prices it, as `gpt-6-astra` and `claude-fable-5-1` did. Entering a rate is
+//! how the honest "no price for this model" becomes something the user can
+//! answer rather than only be told.
 
 use aum_db::Database;
 use aum_db::pricing::{FxRateRow, PriceVersionRow};
@@ -109,8 +110,10 @@ pub async fn load_table(db: &Database) -> Result<PriceTable, aum_db::DbError> {
 
 /// Record a price the user has entered, and return it as it will now be used.
 ///
-/// `effective_from` is now, so the new figure applies from this moment and
-/// every already-costed request keeps the version it was costed with.
+/// `effective_from` is now, so the new figure applies from this moment on, and
+/// earlier usage keeps the rate that was in force when it happened. Where no
+/// rate was — the model had never been priced — this one covers it, because
+/// that usage was unpriced rather than priced at something else.
 pub async fn save_price(
     db: &Database,
     model_id: &str,
@@ -262,28 +265,98 @@ fn to_usage(t: &aum_db::usage::Totals) -> aum_domain::TokenUsage {
     })
 }
 
-/// Cost a set of per-model slices.
+/// Cost a set of per-model slices, each at the rate in force when it happened.
 ///
 /// **Per model, then summed.** Rates differ between models by up to ten times,
 /// so pricing a bucket's combined tokens at any single rate produces a figure
 /// that matches no actual rate — and looks entirely plausible while doing it.
 ///
+/// **At its own time.** Each slice is priced at the version in force at its
+/// first request, which is the version for all of it provided the slices were
+/// cut at [`PriceTable::breaks`]. Pricing them at today's rate instead would
+/// move last month's total every time a provider changed a price.
+///
 /// A slice whose model has no price does not silently contribute zero. The
 /// underlying [`aum_pricing::cost_of_many`] returns a `Partial` carrying both
-/// the priced portion and how many models were missing, so the figure reads as
-/// a floor rather than a total. With nothing priced at all it is `Unavailable`,
-/// and with nothing measured at all it is `Unavailable` too — an empty day has
-/// no cost to report, which is not the same claim as a day that was free.
+/// the priced portion and how many requests were missing, so the figure reads
+/// as a floor rather than a total. With nothing priced at all it is
+/// `Unavailable`, and with nothing measured at all it is `Unavailable` too — an
+/// empty day has no cost to report, which is not the same claim as a day that
+/// was free.
 #[must_use]
 pub fn cost_of_slices<'a>(
-    slices: impl IntoIterator<Item = (&'a Option<String>, &'a aum_db::usage::Totals)>,
+    slices: impl IntoIterator<Item = &'a aum_db::usage::Slice>,
     table: &PriceTable,
 ) -> aum_contract::Measured<aum_contract::Money> {
     let items: Vec<_> = slices
         .into_iter()
-        .map(|(model, totals)| (to_usage(totals), model.clone()))
+        .map(|s| aum_pricing::Priceable {
+            usage: to_usage(&s.totals),
+            model_id: s.model_id.clone(),
+            at: s.first_at.clone(),
+            requests: u64::try_from(s.totals.requests).unwrap_or(0),
+        })
         .collect();
     aum_pricing::cost_of_many(&items, table)
+}
+
+/// One model's cost across a set of slices.
+#[must_use]
+pub fn cost_of_model(
+    model_id: Option<&str>,
+    slices: &[aum_db::usage::Slice],
+    table: &PriceTable,
+) -> aum_contract::Measured<aum_contract::Money> {
+    cost_of_slices(
+        slices.iter().filter(|s| s.model_id.as_deref() == model_id),
+        table,
+    )
+}
+
+/// The versions that priced one model's slices, in the order they applied.
+///
+/// Usually one. More than one means the range spans a price change, and a
+/// single rate printed beside the cost would not reproduce it.
+#[must_use]
+pub fn rates_used<'t>(
+    model_id: &str,
+    slices: &[aum_db::usage::Slice],
+    table: &'t PriceTable,
+) -> Vec<&'t aum_pricing::ModelPricing> {
+    let mut used: Vec<&aum_pricing::ModelPricing> = slices
+        .iter()
+        .filter(|s| s.model_id.as_deref() == Some(model_id))
+        .filter_map(|s| table.lookup_at(model_id, &s.first_at))
+        .collect();
+    used.sort_by(|a, b| a.effective_from.cmp(&b.effective_from));
+    used.dedup_by(|a, b| a.version_id == b.version_id);
+    used
+}
+
+/// Whether the rate that priced a model's latest usage would, on its own,
+/// reproduce the model's whole cost across these slices.
+///
+/// False only when the range spans a price change the usage actually felt.
+/// Two versions that differ in a band nobody used — a cache-write rate on a
+/// model whose agent never reports cache writes — are one rate as far as the
+/// cost is concerned, and marking them would send a reader looking for a
+/// difference that is not there.
+#[must_use]
+pub fn one_rate_reproduces(
+    model_id: &str,
+    slices: &[aum_db::usage::Slice],
+    table: &PriceTable,
+) -> bool {
+    let Some(latest) = rates_used(model_id, slices, table).pop() else {
+        return true;
+    };
+    let alone = PriceTable::from_entries(vec![latest.clone()]);
+    let mine = || {
+        slices
+            .iter()
+            .filter(|s| s.model_id.as_deref() == Some(model_id))
+    };
+    cost_of_slices(mine(), &alone).value == cost_of_slices(mine(), table).value
 }
 
 /// Cost each bucket of a day/hour series, keeping the bucket labels.
@@ -300,10 +373,7 @@ pub fn cost_by_bucket(
         }
     }
     out.into_iter()
-        .map(|(at, group)| {
-            let cost = cost_of_slices(group.iter().map(|s| (&s.model_id, &s.totals)), table);
-            (at, cost)
-        })
+        .map(|(at, group)| (at, cost_of_slices(group, table)))
         .collect()
 }
 
@@ -348,9 +418,17 @@ mod tests {
             .unwrap();
 
         let table = load_table(&db).await.unwrap();
-        let found = table.lookup(UNSEEDED).unwrap();
+        let found = table.lookup_at(UNSEEDED, &aum_db::now_sql()).unwrap();
         assert_eq!(found.rates.input_per_mtok, Decimal::from_str("15").unwrap());
         assert_eq!(found.source, "user");
+
+        // And it prices the weeks the model ran with no price at all, rather
+        // than only what comes after it was entered.
+        let past = table.lookup_at(UNSEEDED, "2026-01-01T00:00:00.000Z");
+        assert_eq!(
+            past.map(|p| p.version_id.as_str()),
+            Some(found.version_id.as_str())
+        );
     }
 
     #[tokio::test]
@@ -387,29 +465,41 @@ mod tests {
             .unwrap();
 
         let table = load_table(&db).await.unwrap();
-        let r = &table.lookup("m").unwrap().rates;
+        let r = &table.lookup_at("m", &aum_db::now_sql()).unwrap().rates;
         assert_eq!(r.input_per_mtok, Decimal::from_str("0.075").unwrap());
         assert_eq!(r.output_per_mtok, Decimal::from_str("1.234567891").unwrap());
     }
 
     #[tokio::test]
-    async fn a_user_price_overrides_a_seeded_one_for_the_same_model() {
+    async fn a_user_price_overrides_a_seeded_one_from_the_moment_it_is_entered() {
+        // What `aum price` promises: a new version, and anything that happened
+        // before it keeps the rate it had.
         let db = db().await;
         let seeded = PriceTable::seed();
-        let Some(known) = seeded.models().first().map(|m| m.model_id.clone()) else {
+        let Some(shipped) = seeded.models().first().copied().cloned() else {
             return;
         };
 
-        save_price(&db, &known, &rates("999.00", "999.00"), None)
+        save_price(&db, &shipped.model_id, &rates("999.00", "999.00"), None)
             .await
             .unwrap();
 
         let table = load_table(&db).await.unwrap();
-        let found = table.lookup(&known).unwrap();
+        let found = table
+            .lookup_at(&shipped.model_id, &aum_db::now_sql())
+            .unwrap();
         assert_eq!(found.source, "user");
         assert_eq!(
             found.rates.input_per_mtok,
             Decimal::from_str("999").unwrap()
+        );
+
+        let before = table
+            .lookup_at(&shipped.model_id, &shipped.effective_from)
+            .unwrap();
+        assert_eq!(
+            before.version_id, shipped.version_id,
+            "usage from before the entry keeps the shipped rate"
         );
     }
 
@@ -422,7 +512,7 @@ mod tests {
         assert!(matches!(err, PriceError::Unstorable { field: "input", .. }));
 
         // And nothing was written, so a rejected edit leaves no trace.
-        assert!(load_table(&db).await.unwrap().lookup("m").is_none());
+        assert!(!load_table(&db).await.unwrap().has_price("m"));
     }
 
     #[tokio::test]
@@ -477,7 +567,7 @@ mod tests {
         .unwrap();
 
         let table = load_table(&db).await.unwrap();
-        let r = &table.lookup("m").unwrap().rates;
+        let r = &table.lookup_at("m", &aum_db::now_sql()).unwrap().rates;
         assert_eq!(r.cache_read_per_mtok, Decimal::from(3));
         assert_eq!(r.cache_write_1h_per_mtok, Decimal::from(3));
     }

@@ -86,6 +86,6 @@ always shown beside `actually billed —  subscription, not billed per token`. A
 comparison of two API-equivalent figures is a comparison of consumption, not of
 money that changed hands.
 
-Cost rows pin the pricing version they used, so usage recorded in March still
-shows March's rates in August. Recalculating is an explicit action, never a side
-effect of editing a price.
+Usage is costed at the rate in force when it happened, so a request made in
+March still shows March's rate in August, and a price cut does not quietly
+shrink the history it came after. See [pricing](pricing.md#versioning).
