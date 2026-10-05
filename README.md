@@ -93,8 +93,10 @@ aum sync                            # one ingest pass, then exit — for cron
 ```
 
 Ranges: `--today`, `--week`, `--month`, `--year 2026`, or `--since`/`--until` with a date or an
-RFC 3339 timestamp. `--no-color` and `NO_COLOR` are both honoured; the certainty markers are text, so
-nothing is lost without colour.
+RFC 3339 timestamp. A date means local midnight, and the days and hours `daily` and `hourly` report,
+`--json` included, are local too, each request dated at the offset in force when it happened. Set
+`TZ` to report in another zone, e.g. `TZ=UTC0` for Greenwich days. `--no-color` and `NO_COLOR` are
+both honoured; the certainty markers are text, so nothing is lost without colour.
 
 `--sort date|requests|tokens|cost` and `--reverse` order the rows, and the output says which order it
 used. Printed tables are chronological by default — the opposite of the interactive view, because

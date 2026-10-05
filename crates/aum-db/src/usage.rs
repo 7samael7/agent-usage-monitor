@@ -15,6 +15,10 @@
 //! inside it, because one slice is priced at one rate. This crate does not know
 //! what a price is — only where the caller said the cuts go.
 //!
+//! **The buckets are the user's days and hours**, not Greenwich's. Timestamps
+//! are stored and compared in UTC, but a day labelled in UTC files half past
+//! midnight in Prague under yesterday, inside a range cut at Prague's midnight.
+//!
 //! Failed requests are excluded from counts and sums throughout, and reported
 //! separately. A failed call has no tokens — folding it in would overstate the
 //! successes while making the two numbers contradict each other.
@@ -232,9 +236,14 @@ pub async fn failed_count(pool: &Pool<Sqlite>, filter: &Filter) -> Result<i64> {
 /// One bucket of one model's usage, on one side of every price change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slice {
-    /// Bucket label: `YYYY-MM-DD` for days, `YYYY-MM-DDTHH` for hours. A bucket
-    /// a price change falls inside comes back as more than one slice with the
-    /// same label.
+    /// Bucket label in local time: `YYYY-MM-DD` for days, `YYYY-MM-DDTHH` for
+    /// hours. A bucket a price change falls inside comes back as more than one
+    /// slice with the same label.
+    ///
+    /// Local because the days are the user's, and the ranges these buckets
+    /// fill are cut at local midnight. Each request is dated at the offset in
+    /// force when it happened, not at today's. An hour a clock change repeats
+    /// is one bucket holding both, and an hour it skips has none.
     pub at: String,
     /// `None` where the transcript never named a model. Not guessed.
     pub model_id: Option<String>,
@@ -258,8 +267,14 @@ async fn grouped(
     } else {
         format!(", {}", vec!["(occurred_at >= ?)"; breaks.len()].join(" + "))
     };
+    // `'localtime'` converts each timestamp through the C library at its own
+    // instant, so a request made before a clock change is dated at the offset
+    // it was made under, and it reads `TZ` and the system zone just as
+    // chrono's `Local` does where the command line cuts a range at local
+    // midnight. Only the label is local: `first_at` and the breaks stay UTC
+    // instants.
     let sql = format!(
-        "SELECT strftime('{fmt}', occurred_at) AS at, model_id,
+        "SELECT strftime('{fmt}', occurred_at, 'localtime') AS at, model_id,
                 MIN(occurred_at) AS first_at, {SELECT_TOTALS}
            FROM ai_request{}
           GROUP BY at, model_id{side}
@@ -283,7 +298,7 @@ async fn grouped(
         .collect()
 }
 
-/// Per day, per model, cut at `breaks`.
+/// Per local day, per model, cut at `breaks`.
 ///
 /// The primary aggregation: a daily cost is the sum of each model's cost that
 /// day, never the day's blended tokens at one rate. Pass the price table's
@@ -296,7 +311,7 @@ pub async fn by_day_model(
     grouped(pool, filter, "%Y-%m-%d", breaks).await
 }
 
-/// Per hour, per model, cut at `breaks`.
+/// Per local hour, per model, cut at `breaks`.
 pub async fn by_hour_model(
     pool: &Pool<Sqlite>,
     filter: &Filter,
@@ -359,6 +374,50 @@ mod tests {
         crate::open_in_memory().await.unwrap()
     }
 
+    // Zones as POSIX rules rather than names, so no test depends on the tz
+    // database a machine happens to have.
+
+    /// Central Europe: UTC+1, and UTC+2 from the last Sunday in March to the
+    /// last in October.
+    const PRAGUE: &str = "CET-1CEST,M3.5.0,M10.5.0/3";
+    /// US Eastern: UTC-5, and UTC-4 from the second Sunday in March to the
+    /// first in November.
+    const NEW_YORK: &str = "EST5EDT,M3.2.0,M11.1.0";
+    const GREENWICH: &str = "UTC0";
+
+    /// Run the calling test again with its local time in `tz`.
+    ///
+    /// Bucket labels are local, so a test that asserts one depends on the
+    /// zone, and the zone has to be in the environment before the process
+    /// first converts a time: SQLite asks the C library, and glibc reads `TZ`
+    /// once. Only a new process gives that (and setting it in this one would
+    /// take `unsafe`). So this runs the test again in a child that is born in
+    /// `tz`, fails if the child does, and returns true, upon which the caller
+    /// returns. In the child it returns false and the body runs.
+    fn rerun_in(tz: &str) -> bool {
+        const CHILD: &str = "AUM_TEST_TZ";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(std::env::var("TZ").as_deref(), Ok(tz));
+            return false;
+        }
+        // The harness names each test's thread after the test.
+        let test = std::thread::current().name().unwrap().to_owned();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+            .env("TZ", tz)
+            .env(CHILD, tz)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        // Exactly one test passed, so a name that matched nothing cannot pass.
+        assert!(
+            out.status.success() && stdout.contains("test result: ok. 1 passed"),
+            "{test} with TZ={tz}:\n{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        true
+    }
+
     fn usage(input: u64, output: u64) -> TokenUsage {
         TokenUsage::from_bands(aum_contract::TokenBands {
             input_fresh: input,
@@ -401,6 +460,9 @@ mod tests {
         // The property the whole module shape exists for. Two models on one
         // day: costing the day's summed tokens at either single rate gives the
         // wrong answer, and only per-model slices make the right one reachable.
+        if rerun_in(GREENWICH) {
+            return;
+        }
         let db = db().await;
         insert(
             &db,
@@ -518,6 +580,9 @@ mod tests {
 
     #[tokio::test]
     async fn hours_bucket_separately_from_days() {
+        if rerun_in(GREENWICH) {
+            return;
+        }
         let db = db().await;
         insert(&db, "2026-08-13T09:30:00Z", "m", "claude_code", usage(1, 0)).await;
         insert(&db, "2026-08-13T09:45:00Z", "m", "claude_code", usage(2, 0)).await;
@@ -664,6 +729,9 @@ mod tests {
         // One slice is priced at one rate. A day a price changed in comes back
         // as two slices for the same model, each dated by its first request, so
         // the morning keeps the old rate and the evening pays the new one.
+        if rerun_in(GREENWICH) {
+            return;
+        }
         let db = db().await;
         insert(&db, "2026-08-21T09:00:00Z", "m", "codex", usage(1, 0)).await;
         insert(&db, "2026-08-21T10:00:00Z", "m", "codex", usage(2, 0)).await;
@@ -710,5 +778,139 @@ mod tests {
         let slices = by_hour_model(db.reader(), &f, &breaks).await.unwrap();
         assert_eq!(slices.len(), 1);
         assert_eq!(slices[0].totals.input_fresh, 2);
+    }
+
+    #[tokio::test]
+    async fn a_day_is_the_users_day_rather_than_greenwichs() {
+        // Half past midnight in Prague is still the day before in UTC. Cut in
+        // UTC, the first two hours of the 13th were filed under the 12th, in a
+        // range whose ends were cut at Prague's midnight.
+        if rerun_in(PRAGUE) {
+            return;
+        }
+        let db = db().await;
+        // 00:30 and 23:30 on the 13th, summer time.
+        insert(&db, "2026-08-12T22:30:00Z", "m", "claude_code", usage(1, 0)).await;
+        insert(&db, "2026-08-13T21:30:00Z", "m", "claude_code", usage(2, 0)).await;
+
+        let days = fold_by_bucket(
+            &by_day_model(db.reader(), &Filter::all(), &[])
+                .await
+                .unwrap(),
+        );
+        assert_eq!(days.len(), 1, "{days:?}");
+        assert_eq!(days[0].0, "2026-08-13");
+        assert_eq!(days[0].1.input_fresh, 3);
+
+        let hours = fold_by_bucket(
+            &by_hour_model(db.reader(), &Filter::all(), &[])
+                .await
+                .unwrap(),
+        );
+        let labels: Vec<&str> = hours.iter().map(|(at, _)| at.as_str()).collect();
+        assert_eq!(labels, ["2026-08-13T00", "2026-08-13T23"]);
+    }
+
+    #[tokio::test]
+    async fn an_evening_west_of_greenwich_stays_on_its_own_day() {
+        if rerun_in(NEW_YORK) {
+            return;
+        }
+        let db = db().await;
+        // 22:00 on the 13th in New York, and already the 14th in UTC.
+        insert(&db, "2026-08-14T02:00:00Z", "m", "codex", usage(1, 0)).await;
+
+        let days = by_day_model(db.reader(), &Filter::all(), &[])
+            .await
+            .unwrap();
+        assert_eq!(days[0].at, "2026-08-13");
+        let hours = by_hour_model(db.reader(), &Filter::all(), &[])
+            .await
+            .unwrap();
+        assert_eq!(hours[0].at, "2026-08-13T22");
+    }
+
+    #[tokio::test]
+    async fn each_request_is_dated_at_the_offset_in_force_when_it_happened() {
+        // Prague leaves summer time at 03:00 on 25 October. One offset for the
+        // whole range, whichever one, files one end of that day in a neighbour.
+        if rerun_in(PRAGUE) {
+            return;
+        }
+        let db = db().await;
+        // 00:30 at UTC+2, and 23:30 at UTC+1.
+        insert(&db, "2026-10-24T22:30:00Z", "m", "codex", usage(1, 0)).await;
+        insert(&db, "2026-10-25T22:30:00Z", "m", "codex", usage(2, 0)).await;
+
+        let days = fold_by_bucket(
+            &by_day_model(db.reader(), &Filter::all(), &[])
+                .await
+                .unwrap(),
+        );
+        assert_eq!(days.len(), 1, "{days:?}");
+        assert_eq!(days[0].0, "2026-10-25");
+        assert_eq!(days[0].1.input_fresh, 3);
+    }
+
+    #[tokio::test]
+    async fn an_hour_the_clocks_repeat_is_one_bucket_and_one_they_skip_is_none() {
+        if rerun_in(PRAGUE) {
+            return;
+        }
+        let db = db().await;
+        // 25 October: 02:30 in summer time, then 02:30 again an hour later.
+        insert(&db, "2026-10-25T00:30:00Z", "m", "codex", usage(1, 0)).await;
+        insert(&db, "2026-10-25T01:30:00Z", "m", "codex", usage(2, 0)).await;
+        // 29 March: 01:30, then 03:30 an hour later, because 02:00 never came.
+        insert(&db, "2026-03-29T00:30:00Z", "m", "codex", usage(4, 0)).await;
+        insert(&db, "2026-03-29T01:30:00Z", "m", "codex", usage(8, 0)).await;
+
+        let hours = fold_by_bucket(
+            &by_hour_model(db.reader(), &Filter::all(), &[])
+                .await
+                .unwrap(),
+        );
+        let got: Vec<(&str, i64)> = hours
+            .iter()
+            .map(|(at, t)| (at.as_str(), t.input_fresh))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("2026-03-29T01", 4),
+                ("2026-03-29T03", 8),
+                ("2026-10-25T02", 3)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_price_change_cuts_a_local_day_at_its_instant() {
+        // A local label changes which day a slice is filed under, and nothing
+        // about where it is cut or when it is priced: the break and `first_at`
+        // are instants.
+        if rerun_in(PRAGUE) {
+            return;
+        }
+        let db = db().await;
+        // 00:30, 12:00 and 22:00 on the 21st, summer time.
+        insert(&db, "2026-08-20T22:30:00Z", "m", "codex", usage(1, 0)).await;
+        insert(&db, "2026-08-21T10:00:00Z", "m", "codex", usage(2, 0)).await;
+        insert(&db, "2026-08-21T20:00:00Z", "m", "codex", usage(4, 0)).await;
+
+        // 14:00.
+        let change = "2026-08-21T12:00:00.000Z".to_owned();
+        let cut = by_day_model(db.reader(), &Filter::all(), &[change])
+            .await
+            .unwrap();
+        assert_eq!(cut.len(), 2, "{cut:?}");
+        assert!(cut.iter().all(|s| s.at == "2026-08-21"));
+        // Priced as of its first request, which is still the 20th in UTC.
+        assert_eq!(cut[0].first_at, "2026-08-20T22:30:00.000Z");
+        assert_eq!(cut[0].totals.input_fresh, 3);
+        assert_eq!(cut[1].first_at, "2026-08-21T20:00:00.000Z");
+        assert_eq!(cut[1].totals.input_fresh, 4);
+
+        assert_eq!(fold_by_bucket(&cut).len(), 1);
     }
 }
