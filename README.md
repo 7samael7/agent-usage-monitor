@@ -253,9 +253,12 @@ architectures, and points the Homebrew formula at the new source tarball.
 The version travels in the pull request, because main changes only through one. `make bump`
 raises the patch number and `make bump V=0.2.0` sets any version; both rewrite `Cargo.toml` and
 `Cargo.lock` for you to commit with your change. A pull request whose version is already released
-fails its `version` check, and a merge that gets past that anyway fails the release run with the
-same words, rather than quietly releasing nothing. Nothing is tagged until every target has built
-and the native ones have passed the tests.
+fails its `version` check, and so does one whose version is older than the latest release: when two
+pull requests carry the same number and one merges, the other has to go above it, not just to a
+number nobody has used, or it would release backwards. The error names the version to bump to. A
+merge that gets past that anyway fails the release run with the same words, rather than quietly
+releasing nothing. Nothing is tagged until every target has built and the native ones have passed
+the tests.
 
 The formula step needs a `HOMEBREW_TAP_TOKEN` repository secret: a fine-grained token with read
 and write on the contents of `7samael7/homebrew-tap`. Without it the step says so and skips, and

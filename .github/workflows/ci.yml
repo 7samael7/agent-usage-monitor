@@ -4,7 +4,10 @@
 #
 # It also checks that the pull request carries a version nobody has released
 # yet, because merging is what releases it, and main accepts nothing but pull
-# requests. `make bump` is the one command that satisfies it.
+# requests. `make bump` is the one command that satisfies it. The version must
+# also be newer than the latest release: two pull requests can carry the same
+# number, and once one has merged, a bump of the other to any free number is
+# not enough, because one below the latest would release backwards.
 name: ci
 
 on:
@@ -25,11 +28,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: The version in Cargo.toml must not be released yet
+      - name: The version in Cargo.toml must be newer than every release
         run: |
           version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          tags=$(git ls-remote --tags --refs origin 'refs/tags/v*')
+          latest=$(printf '%s\n' "$tags" | sed -nE 's|.*refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$|\1|p' | sort -V | tail -n 1)
+          IFS=. read -r major minor patch <<<"${latest:-0.0.0}"
+          next="$major.$minor.$((patch + 1))"
           if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
-            echo "::error title=Bump the version::Cargo.toml says $version, and v$version is already released, so merging this would build nothing. Run 'make bump' (or 'make bump V=x.y.z') and commit Cargo.toml and Cargo.lock."
+            echo "::error title=Bump the version::Cargo.toml says $version, and v$version is already released, so merging this would build nothing. Run 'make bump V=$next' and commit Cargo.toml and Cargo.lock."
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "$latest" "$version" | sort -V | tail -n 1)" != "$version" ]; then
+            echo "::error title=Bump the version::Cargo.toml says $version, and v$latest is already released, so merging this would release backwards. Run 'make bump V=$next' and commit Cargo.toml and Cargo.lock."
             exit 1
           fi
           echo "Merging releases v$version."
