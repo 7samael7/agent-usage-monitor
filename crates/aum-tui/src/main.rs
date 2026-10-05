@@ -20,17 +20,20 @@ mod tui;
 use clap::Parser as _;
 use cli::{Cli, Command};
 use context::Context;
+use tracing_subscriber::filter::{LevelFilter, Targets};
+use tracing_subscriber::layer::SubscriberExt as _;
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     // Logs go to stderr so that `aum daily --json | jq` stays clean.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("AUM_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .without_time(),
         )
-        .without_time()
+        .with(log_filter())
         .init();
 
     match run().await {
@@ -43,6 +46,30 @@ async fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// What `AUM_LOG` asks to see: `warn` and worse unless it says otherwise.
+///
+/// It takes the `target=level` list `RUST_LOG` does — `AUM_LOG=debug`,
+/// `AUM_LOG=sqlx=debug,warn` — but not `EnvFilter`'s span and field filters.
+/// Those need a regular-expression engine, which was a tenth of the binary,
+/// for a switch that is only ever flipped by hand.
+fn log_filter() -> Targets {
+    let warn = || Targets::new().with_default(LevelFilter::WARN);
+    let Ok(value) = std::env::var("AUM_LOG") else {
+        return warn();
+    };
+    // An empty entry, from `AUM_LOG=` or a trailing comma, would parse as a
+    // target that every target starts with, and switch on `trace` for all.
+    let directives: Vec<&str> = value
+        .split(',')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .collect();
+    if directives.is_empty() {
+        return warn();
+    }
+    directives.join(",").parse().unwrap_or_else(|_| warn())
 }
 
 async fn run() -> anyhow::Result<()> {
