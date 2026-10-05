@@ -8,9 +8,17 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-/// Central Europe, as a POSIX rule so the test needs no tz database: UTC+1, and
-/// UTC+2 from the last Sunday in March to the last in October.
+// Zones as POSIX rules, so the tests need no tz database.
+
+/// Central Europe: UTC+1, and UTC+2 from the last Sunday in March to the last
+/// in October.
 const PRAGUE: &str = "CET-1CEST,M3.5.0,M10.5.0/3";
+/// Chile, as its own tz entry ends: UTC-4, and UTC-3 from the first Sunday in
+/// September, when the clock goes from the end of Saturday straight to 01:00.
+const SANTIAGO: &str = "<-04>4<-03>,M9.1.6/24,M4.1.6/24";
+/// Cuba: UTC-5, and UTC-4 from the second Sunday in March, when the clock goes
+/// from the end of Saturday straight to 01:00.
+const HAVANA: &str = "CST5CDT,M3.2.0/0,M11.1.0/1";
 
 async fn insert(db: &aum_db::Database, at: &str) {
     aum_db::repo::upsert_usage(
@@ -57,13 +65,13 @@ async fn recorded(at: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
-/// What `aum` prints for these arguments, run in Prague.
-fn aum_in_prague(db: &std::path::Path, args: &[&str]) -> String {
+/// What `aum` prints for these arguments, run in `tz`.
+fn aum_in(tz: &str, db: &std::path::Path, args: &[&str]) -> String {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_aum"))
         .args(args)
         .args(["--no-sync", "--db"])
         .arg(db)
-        .env("TZ", PRAGUE)
+        .env("TZ", tz)
         .output()
         .unwrap();
     assert!(
@@ -105,10 +113,10 @@ async fn a_day_in_prague_is_reported_as_pragues_day() {
     // The same local midnights `--today` cuts at, on a date that holds still.
     let day = ["--since", "2026-08-13", "--until", "2026-08-14", "--json"];
 
-    let daily = aum_in_prague(&db, &[&["daily"][..], &day].concat());
+    let daily = aum_in(PRAGUE, &db, &[&["daily"][..], &day].concat());
     assert_eq!(buckets(&daily), [("2026-08-13".to_owned(), 2)]);
 
-    let hourly = aum_in_prague(&db, &[&["hourly"][..], &day].concat());
+    let hourly = aum_in(PRAGUE, &db, &[&["hourly"][..], &day].concat());
     assert_eq!(
         buckets(&hourly),
         [
@@ -122,6 +130,54 @@ async fn a_day_in_prague_is_reported_as_pragues_day() {
 async fn a_session_was_last_active_at_pragues_time() {
     // Beside the hourly rows, which put this request at 10.
     let (_dir, db) = recorded(&["2026-08-13T08:30:00Z"]).await;
-    let table = aum_in_prague(&db, &["sessions"]);
+    let table = aum_in(PRAGUE, &db, &["sessions"]);
     assert!(table.contains("2026-08-13 10:30"), "{table}");
+}
+
+#[tokio::test]
+async fn a_day_whose_midnight_the_clock_skips_begins_when_it_resumes() {
+    // Santiago has no midnight on 6 September: the clock goes from the 5th's
+    // last second to 01:00. The 6th begins at that jump. Recorded here: the
+    // last second of the 5th, the first and last of the 6th, and the first of
+    // the 7th.
+    let (_dir, db) = recorded(&[
+        "2026-09-06T03:59:59Z",
+        "2026-09-06T04:00:00Z",
+        "2026-09-07T02:59:59Z",
+        "2026-09-07T03:00:00Z",
+    ])
+    .await;
+    let day = [
+        "daily",
+        "--since",
+        "2026-09-06",
+        "--until",
+        "2026-09-07",
+        "--json",
+    ];
+    assert_eq!(
+        buckets(&aum_in(SANTIAGO, &db, &day)),
+        [("2026-09-06".to_owned(), 2)]
+    );
+
+    // Havana makes the same jump on 8 March, north of the equator.
+    let (_dir, db) = recorded(&[
+        "2026-03-08T04:59:59Z",
+        "2026-03-08T05:00:00Z",
+        "2026-03-09T03:59:59Z",
+        "2026-03-09T04:00:00Z",
+    ])
+    .await;
+    let day = [
+        "daily",
+        "--since",
+        "2026-03-08",
+        "--until",
+        "2026-03-09",
+        "--json",
+    ];
+    assert_eq!(
+        buckets(&aum_in(HAVANA, &db, &day)),
+        [("2026-03-08".to_owned(), 2)]
+    );
 }
