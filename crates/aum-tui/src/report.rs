@@ -584,10 +584,9 @@ pub async fn sessions(ctx: &Context, limit: i64, json: bool) -> anyhow::Result<(
     ]);
     for s in &summaries {
         t.push(vec![
-            s.last_at.as_deref().map_or_else(
-                || "—".to_owned(),
-                |a| a.replace('T', " ").chars().take(16).collect(),
-            ),
+            s.last_at
+                .as_deref()
+                .map_or_else(|| "—".to_owned(), fmt::local_minute),
             s.adapter_id.clone(),
             s.model_id.clone().unwrap_or_else(|| "—".to_owned()),
             if s.failed > 0 {

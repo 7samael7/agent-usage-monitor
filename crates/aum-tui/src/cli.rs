@@ -237,8 +237,9 @@ pub struct Resolved {
 ///
 /// Days are the user's days. A boundary computed in UTC would put an evening's
 /// work in tomorrow for anyone west of Greenwich, and split a working day in
-/// two for anyone east of it.
-fn local_midnight(date: NaiveDate) -> Option<String> {
+/// two for anyone east of it. The day buckets are local for the same reason,
+/// so a range cut here holds whole buckets.
+pub(crate) fn local_midnight(date: NaiveDate) -> Option<String> {
     let naive = date.and_hms_opt(0, 0, 0)?;
     let local = Local.from_local_datetime(&naive).earliest()?;
     Some(aum_db::to_sql_time(local.with_timezone(&Utc)))

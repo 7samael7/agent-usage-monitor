@@ -152,6 +152,27 @@ fn paint(body: &str, kind: DisplayKind, colourise: bool) -> String {
     }
 }
 
+/// A stored instant as the local minute it fell in, `YYYY-MM-DD HH:MM`.
+///
+/// Stored times are UTC. Printed as stored with the `Z` cut off, a session last
+/// active at 10:30 in Prague read 08:30, beside hourly rows that put the same
+/// request at 10.
+#[must_use]
+pub fn local_minute(at: &str) -> String {
+    minute_in(at, &chrono::Local)
+}
+
+fn minute_in<Tz: chrono::TimeZone>(at: &str, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    chrono::DateTime::parse_from_rfc3339(at).map_or_else(
+        // Not a timestamp this tool wrote, so shown as it is rather than not.
+        |_| at.replace('T', " ").chars().take(16).collect(),
+        |t| t.with_timezone(zone).format("%Y-%m-%d %H:%M").to_string(),
+    )
+}
+
 /// The one-line legend that makes the prefixes readable without documentation.
 #[must_use]
 pub fn legend(colourise: bool) -> String {
@@ -271,6 +292,21 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use aum_contract::{MeasurementSource, UnavailableReason};
+
+    #[test]
+    fn a_stored_instant_reads_as_the_local_minute() {
+        let summer_in_prague = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        assert_eq!(
+            minute_in("2026-08-13T08:30:59.999Z", &summer_in_prague),
+            "2026-08-13 10:30"
+        );
+        // Past midnight, the date moves with the hour.
+        assert_eq!(
+            minute_in("2026-08-12T22:30:00.000Z", &summer_in_prague),
+            "2026-08-13 00:30"
+        );
+        assert_eq!(minute_in("yesterday", &summer_in_prague), "yesterday");
+    }
 
     #[test]
     fn counts_are_grouped_for_reading() {

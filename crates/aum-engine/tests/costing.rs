@@ -15,6 +15,36 @@ use aum_pricing::Rates;
 use rust_decimal::Decimal;
 use std::str::FromStr as _;
 
+/// Run the calling test again in a child process whose local time is UTC, and
+/// say whether this is the parent, which then returns.
+///
+/// Day buckets are local, so a test that asserts which day something landed on
+/// depends on the zone. The zone must be in the environment before the first
+/// time conversion, because glibc reads `TZ` once, so it is set on a child
+/// rather than in this process — the same as `rerun_in` in aum-db's usage tests.
+fn rerun_in_utc() -> bool {
+    const CHILD: &str = "AUM_TEST_TZ";
+    if std::env::var_os(CHILD).is_some() {
+        assert_eq!(std::env::var("TZ").as_deref(), Ok("UTC0"));
+        return false;
+    }
+    // The harness names each test's thread after the test.
+    let test = std::thread::current().name().unwrap().to_owned();
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+        .env("TZ", "UTC0")
+        .env(CHILD, "UTC0")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "{test} with TZ=UTC0:\n{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    true
+}
+
 fn rates(input: &str, output: &str) -> Rates {
     let d = |s: &str| Decimal::from_str(s).unwrap();
     Rates {
@@ -127,6 +157,9 @@ async fn one_unpriced_model_makes_the_total_a_floor_that_says_so() {
 
 #[tokio::test]
 async fn each_bucket_is_costed_from_its_own_models() {
+    if rerun_in_utc() {
+        return;
+    }
     let db = aum_db::open_in_memory().await.unwrap();
     save_price(&db, "expensive", &rates("5.00", "0"), None)
         .await
@@ -249,6 +282,9 @@ async fn a_day_a_price_changed_in_is_split_at_the_change() {
     // The rate changed at noon. The morning's million tokens were charged $10
     // and the evening's $15. Costing the whole day at either rate is wrong by
     // $5, however the day's bucket happens to be dated.
+    if rerun_in_utc() {
+        return;
+    }
     let db = aum_db::open_in_memory().await.unwrap();
     price_from(&db, "m", 10, "2026-03-01T00:00:00.000Z").await;
     price_from(&db, "m", 15, "2026-08-21T12:00:00.000Z").await;
