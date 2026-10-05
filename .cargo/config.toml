@@ -6,3 +6,12 @@
 # `--quiet` so the tool's own report is the only thing on stdout.
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# The SQLite that `libsqlite3-sys` bundles is compiled with full-text search
+# (FTS3 and FTS5), R*Tree and the `dbstat` table switched on. SQLite itself
+# leaves all four off unless asked, nothing here uses any of them, and together
+# they were 250 KB of the binary. `-U` takes them back out; the build script
+# passes these flags after its own. Homebrew's `cargo install --path` reads this
+# file too, so the formula builds the same SQLite as the release.
+[env]
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_FTS5 -USQLITE_ENABLE_RTREE -USQLITE_ENABLE_DBSTAT_VTAB"

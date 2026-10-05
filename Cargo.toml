@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT"
@@ -67,7 +67,7 @@ sha2 = "0.11.0"
 
 # ── diagnostics ──────────────────────────────────────────────────────────────
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tracing-subscriber = "0.3.23"
 thiserror = "2.0.20"
 anyhow = "1.0.104"
 
@@ -84,9 +84,18 @@ expect_used = "warn"
 # in a release build and ship a plausible, enormous, wrong number.
 
 [profile.release]
-lto = "thin"
+# Optimised for size. At 3 the binary is a third larger and buys nothing anyone
+# would notice: a first sync of 1.2 GB of transcripts takes the same wall-clock
+# time at "s", because it is file reads and SQLite writes, and the few per cent
+# more CPU disappears into them. "z" shrank the binary by another sixth but the
+# download by only a twelfth, for 30 % more CPU.
+opt-level = "s"
+# Fat rather than thin: 15 % smaller at "s", for a longer final link.
+lto = "fat"
 codegen-units = 1
-strip = "debuginfo"
+# The symbol table was an eighth of the binary. A panic still names the file and
+# line it came from; a backtrace loses the function names.
+strip = "symbols"
 
 # Overflow checks stay ON in release. This crate does arithmetic on provider-reported
 # counters; a silent wrap would produce a plausible, enormous, wrong number.
