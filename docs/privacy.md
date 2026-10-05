@@ -86,17 +86,35 @@ counts, costs and identifiers. There is no content to export.
 
 ## Environment variables
 
-The monitor reads three: `AUM_DATA_DIR` (where the database lives), `NO_COLOR`,
-and `PATH` — the last only to report on the **Apps** tab where each agent's
-executable is, which is why Codex shows up as living inside `ChatGPT.app`. It
-does not read, store, display or pass on API keys, and none of the three is ever
-written to the database.
+The monitor's own code reads four: `AUM_DATA_DIR` (where the database lives),
+`AUM_LOG` (which log lines reach stderr, the only place anything is logged),
+`NO_COLOR`, and `PATH` — the last only to report on the **Apps** tab where each
+agent's executable is, which is why Codex shows up as living inside `ChatGPT.app`.
+
+The libraries underneath read their own, all of the ordinary kind: `HOME`, and
+`XDG_DATA_HOME` on Linux, to find your home and data directories; `TZ` for local
+time; `SQLITE_TMPDIR` and `TMPDIR` for SQLite's temporary files, and on macOS
+`SQLITE_FORCE_PROXY_LOCKING` for how it locks the database; `TOKIO_WORKER_THREADS`
+and `RUST_MIN_STACK` for threads; `RUST_BACKTRACE` and `RUST_LIB_BACKTRACE` for
+backtraces; and `TERM`, `CLICOLOR`, `CLICOLOR_FORCE` and `CI` for whether help
+and argument errors are printed in colour. The list is read off the source of
+every crate linked into the binary, at the committed `Cargo.lock`, so a
+dependency update can change it.
+
+None of them holds a credential, and nothing in the binary walks the whole
+environment, so the monitor does not read, store or display API keys. No
+variable's value is written to the database. What the database does hold is the
+path of every transcript it has read, and those paths begin with your home
+directory.
 
 This section used to be much longer. When the monitor could launch agents, it
 had to accept environment variables for the child process, and the rule was that
-they were write-only and never logged. It launches nothing now, so it holds no
+they were write-only and never logged. It launches no agents now, so it holds no
 credentials at all — the safest way to handle a secret turned out to be not
-having a reason to touch one.
+having a reason to touch one. The one child process anything in it can start is
+`tput`, which the terminal library falls back to for the window size when a
+terminal will not report it, and which inherits the environment as any child
+would; a real terminal reports it.
 
 ## Test fixtures
 
