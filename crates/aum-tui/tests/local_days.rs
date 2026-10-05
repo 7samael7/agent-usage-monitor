@@ -117,3 +117,11 @@ async fn a_day_in_prague_is_reported_as_pragues_day() {
         ]
     );
 }
+
+#[tokio::test]
+async fn a_session_was_last_active_at_pragues_time() {
+    // Beside the hourly rows, which put this request at 10.
+    let (_dir, db) = recorded(&["2026-08-13T08:30:00Z"]).await;
+    let table = aum_in_prague(&db, &["sessions"]);
+    assert!(table.contains("2026-08-13 10:30"), "{table}");
+}
