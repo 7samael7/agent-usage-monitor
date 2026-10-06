@@ -126,6 +126,20 @@
     "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24; the launch price is now the standard one, and the rise to 3.00/15.00 planned for 2026-09-01 was cancelled"
   },
   {
+    "version_id": "seed-claude-sonnet-5-5-2026-09",
+    "model_id": "claude-sonnet-5-5",
+    "rates": {
+      "input_per_mtok": "2.00",
+      "output_per_mtok": "10.00",
+      "cache_read_per_mtok": "0.20",
+      "cache_write_5m_per_mtok": "2.50",
+      "cache_write_1h_per_mtok": "4.00"
+    },
+    "effective_from": "2026-09-28T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-10-06; in force from its launch on 2026-09-28 (platform.claude.com/docs/en/release-notes/overview)"
+  },
+  {
     "version_id": "seed-gpt-5.4-2026-08",
     "model_id": "gpt-5.4",
     "rates": {
@@ -264,5 +278,19 @@
     "effective_from": "2026-09-22T00:00:00.000Z",
     "source": "seed",
     "note": "developers.openai.com/api/docs/pricing, checked 2026-09-24; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-6.1-sol-2026-09",
+    "model_id": "gpt-6.1-sol",
+    "rates": {
+      "input_per_mtok": "2.00",
+      "output_per_mtok": "10.00",
+      "cache_read_per_mtok": "0.10",
+      "cache_write_5m_per_mtok": "2.50",
+      "cache_write_1h_per_mtok": "2.50"
+    },
+    "effective_from": "2026-09-29T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-10-06; in force from its release on 2026-09-29 (developers.openai.com/api/docs/changelog); cache reads at 0.05x input rather than the usual 0.1x; the short-context rate, which applies below 272K context"
   }
 ]

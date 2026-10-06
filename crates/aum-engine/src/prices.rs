@@ -445,9 +445,11 @@ mod tests {
             "claude-fable-5",
             "claude-fable-5-1",
             "claude-sonnet-5",
+            "claude-sonnet-5-5",
             "gpt-5.6-terra",
             "gpt-5.5",
             "gpt-6-astra",
+            "gpt-6.1-sol",
         ] {
             assert!(
                 table.has_price(model),
