@@ -2,13 +2,16 @@
 #
 # The contract: a push to main ends as a tagged, published release, and the
 # Homebrew formula follows it. The version is whatever Cargo.toml says, and it
-# has to be new. Main changes only through a pull request, so the bump travels
-# in the pull request (`make bump`), and `ci` refuses one that forgot. A merge
-# that still arrives with a released version fails here, out loud, rather than
-# releasing nothing quietly. Re-running on the commit that is already the
-# release is a no-op, except for the formula: the Homebrew bump runs whenever
-# the tap is behind the released version, so a release that could not reach the
-# tap at the time is repaired by re-running this workflow rather than by hand.
+# has to be new: unreleased, and above the latest release, because one below it
+# would be published as the latest while being older than what came before.
+# Main changes only through a pull request, so the bump travels in the pull
+# request (`make bump`), and `ci` refuses one that forgot. A merge that still
+# arrives with a version that is not new fails here, out loud, rather than
+# quietly releasing nothing or releasing backwards. Re-running on the commit
+# that is already the release is a no-op, except for the formula: the Homebrew
+# bump runs whenever the tap is behind the released version, so a release that
+# could not reach the tap at the time is repaired by re-running this workflow
+# rather than by hand.
 #
 # The build itself is `build.yml`, the same one pull requests run, so a merge
 # never builds anything for the first time. Nothing is tagged until every
@@ -42,19 +45,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Read Cargo.toml and make sure that version is not released yet
+      - name: Read Cargo.toml and make sure that version is newer than every release
         id: read
         run: |
           version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          tags=$(git ls-remote --tags --refs origin 'refs/tags/v*')
+          latest=$(printf '%s\n' "$tags" | sed -nE 's|.*refs/tags/v([0-9]+\.[0-9]+\.[0-9]+)$|\1|p' | sort -V | tail -n 1)
+          IFS=. read -r major minor patch <<<"${latest:-0.0.0}"
+          next="$major.$minor.$((patch + 1))"
           if ! git fetch --quiet --depth=1 origin "refs/tags/v$version:refs/tags/v$version" 2>/dev/null; then
+            if [ "$(printf '%s\n' "$latest" "$version" | sort -V | tail -n 1)" != "$version" ]; then
+              echo "::error title=Nothing to release::Cargo.toml says $version, and v$latest is already released, so releasing $version now would go backwards. The version travels in the pull request: run 'make bump V=$next' and commit Cargo.toml and Cargo.lock."
+              exit 1
+            fi
             echo "release=true" >> "$GITHUB_OUTPUT"
             echo "v$version is new; releasing it from ${GITHUB_SHA::7}."
           elif [ "$(git rev-parse "v$version^{commit}")" = "$GITHUB_SHA" ]; then
             echo "release=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=Already released::v$version is this very commit. Nothing to build."
           else
-            echo "::error title=Nothing to release::Cargo.toml still says $version, and v$version is already released from another commit. The version travels in the pull request: run 'make bump' and commit Cargo.toml and Cargo.lock."
+            echo "::error title=Nothing to release::Cargo.toml still says $version, and v$version is already released from another commit. The version travels in the pull request: run 'make bump V=$next' and commit Cargo.toml and Cargo.lock."
             exit 1
           fi
 
