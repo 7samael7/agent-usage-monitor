@@ -723,10 +723,11 @@ fn sessions(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default()
             };
             Row::new(vec![
-                Cell::from(s.last_at.as_deref().map_or_else(
-                    || "—".to_owned(),
-                    |a| a.replace('T', " ").chars().take(16).collect(),
-                )),
+                Cell::from(
+                    s.last_at
+                        .as_deref()
+                        .map_or_else(|| "—".to_owned(), fmt::local_minute),
+                ),
                 Cell::from(s.adapter_id.clone()),
                 Cell::from(s.model_id.clone().unwrap_or_else(|| "—".to_owned())),
                 Cell::from(if s.failed > 0 {

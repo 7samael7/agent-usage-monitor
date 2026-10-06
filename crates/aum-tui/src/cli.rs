@@ -237,11 +237,22 @@ pub struct Resolved {
 ///
 /// Days are the user's days. A boundary computed in UTC would put an evening's
 /// work in tomorrow for anyone west of Greenwich, and split a working day in
-/// two for anyone east of it.
-fn local_midnight(date: NaiveDate) -> Option<String> {
-    let naive = date.and_hms_opt(0, 0, 0)?;
-    let local = Local.from_local_datetime(&naive).earliest()?;
-    Some(aum_db::to_sql_time(local.with_timezone(&Utc)))
+/// two for anyone east of it. The day buckets are local for the same reason,
+/// so a range cut here holds whole buckets.
+///
+/// Some days have no midnight. Santiago, Havana, Beirut and Cairo put their
+/// clocks forward from 00:00, so on that day the clock goes from the last
+/// second of the day before straight to 01:00. Such a day begins at the jump,
+/// which is the first minute its clock does show, whether the zone's rules
+/// count 00:00 as the instant of the jump or as a time that never happened.
+/// Read literally, such a date has no start: `--since` it would be refused,
+/// and `--today` on it would reach back over all of history.
+pub(crate) fn local_midnight(date: NaiveDate) -> Option<String> {
+    let midnight = date.and_hms_opt(0, 0, 0)?;
+    let first = (0..=24 * 60)
+        .filter_map(|minute| midnight.checked_add_signed(chrono::Duration::minutes(minute)))
+        .find_map(|t| Local.from_local_datetime(&t).earliest())?;
+    Some(aum_db::to_sql_time(first.with_timezone(&Utc)))
 }
 
 /// Parse a `YYYY-MM-DD` or RFC 3339 argument into a UTC timestamp string.

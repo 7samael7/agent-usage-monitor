@@ -89,11 +89,11 @@ impl Data {
         // The heatmap always shows a year, whatever range the rest is showing:
         // it exists to give the other tabs context, and a heatmap of the same
         // seven days you are already looking at tells you nothing.
+        // From local midnight, because the days are local: a UTC midnight
+        // would cut the first one short east of Greenwich.
         let year_ago = chrono::Local::now().date_naive() - chrono::Duration::days(364);
         let year_filter = Filter {
-            since: Some(aum_db::to_sql_time(
-                year_ago.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc(),
-            )),
+            since: crate::cli::local_midnight(year_ago),
             until: None,
             adapter: filter.adapter.clone(),
         };
