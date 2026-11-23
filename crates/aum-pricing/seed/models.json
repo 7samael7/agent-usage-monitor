@@ -28,6 +28,20 @@
     "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24; cache reads at 0.025x input rather than the usual 0.1x"
   },
   {
+    "version_id": "seed-claude-fable-5-2-2026-11",
+    "model_id": "claude-fable-5-2",
+    "rates": {
+      "input_per_mtok": "8.00",
+      "output_per_mtok": "40.00",
+      "cache_read_per_mtok": "0.20",
+      "cache_write_5m_per_mtok": "10.00",
+      "cache_write_1h_per_mtok": "16.00"
+    },
+    "effective_from": "2026-11-09T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-23; in force from its launch on 2026-11-09 (platform.claude.com/docs/en/release-notes/overview); cache reads at 0.025x input rather than the usual 0.1x; standard speed only, fast mode is billed at 16.00 in and 80.00 out"
+  },
+  {
     "version_id": "seed-claude-haiku-4-5-2025-10",
     "model_id": "claude-haiku-4-5-20251001",
     "rates": {
@@ -40,6 +54,20 @@
     "effective_from": "2025-10-01T00:00:00.000Z",
     "source": "seed",
     "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-09-24"
+  },
+  {
+    "version_id": "seed-claude-haiku-5-5-2026-10",
+    "model_id": "claude-haiku-5-5",
+    "rates": {
+      "input_per_mtok": "0.10",
+      "output_per_mtok": "0.50",
+      "cache_read_per_mtok": "0.01",
+      "cache_write_5m_per_mtok": "0.125",
+      "cache_write_1h_per_mtok": "0.20"
+    },
+    "effective_from": "2026-10-07T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-23; in force from its launch on 2026-10-07 (platform.claude.com/docs/en/release-notes/overview); the rate for prompts up to 100,000 tokens, above which every rate is five times higher"
   },
   {
     "version_id": "seed-claude-opus-4-1-2025-08",
@@ -138,6 +166,20 @@
     "effective_from": "2026-09-28T00:00:00.000Z",
     "source": "seed",
     "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-10-06; in force from its launch on 2026-09-28 (platform.claude.com/docs/en/release-notes/overview)"
+  },
+  {
+    "version_id": "seed-claude-sonnet-5-5-2026-10-07",
+    "model_id": "claude-sonnet-5-5",
+    "rates": {
+      "input_per_mtok": "2.00",
+      "output_per_mtok": "10.00",
+      "cache_read_per_mtok": "0.10",
+      "cache_write_5m_per_mtok": "2.50",
+      "cache_write_1h_per_mtok": "4.00"
+    },
+    "effective_from": "2026-10-07T00:00:00.000Z",
+    "source": "seed",
+    "note": "platform.claude.com/docs/en/about-claude/pricing, checked 2026-11-23; cache reads cut from 0.20 to 0.10 on 2026-10-07, 0.05x input rather than the usual 0.1x, and nothing else changed (platform.claude.com/docs/en/release-notes/overview)"
   },
   {
     "version_id": "seed-gpt-5.4-2026-08",
@@ -292,5 +334,47 @@
     "effective_from": "2026-09-29T00:00:00.000Z",
     "source": "seed",
     "note": "developers.openai.com/api/docs/pricing, checked 2026-10-06; in force from its release on 2026-09-29 (developers.openai.com/api/docs/changelog); cache reads at 0.05x input rather than the usual 0.1x; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-6.1-terra-2026-10",
+    "model_id": "gpt-6.1-terra",
+    "rates": {
+      "input_per_mtok": "1.00",
+      "output_per_mtok": "5.00",
+      "cache_read_per_mtok": "0.05",
+      "cache_write_5m_per_mtok": "1.25",
+      "cache_write_1h_per_mtok": "1.25"
+    },
+    "effective_from": "2026-10-26T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-11-23; in force from its release on 2026-10-26 (developers.openai.com/api/docs/changelog); cache reads at 0.05x input rather than the usual 0.1x; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-6.2-astra-2026-11",
+    "model_id": "gpt-6.2-astra",
+    "rates": {
+      "input_per_mtok": "8.00",
+      "output_per_mtok": "40.00",
+      "cache_read_per_mtok": "0.40",
+      "cache_write_5m_per_mtok": "10.00",
+      "cache_write_1h_per_mtok": "10.00"
+    },
+    "effective_from": "2026-11-17T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-11-23; in force from its release on 2026-11-17 (developers.openai.com/api/docs/changelog); cache reads at 0.05x input rather than the usual 0.1x; the short-context rate, which applies below 272K context"
+  },
+  {
+    "version_id": "seed-gpt-6.2-sol-2026-11",
+    "model_id": "gpt-6.2-sol",
+    "rates": {
+      "input_per_mtok": "2.00",
+      "output_per_mtok": "10.00",
+      "cache_read_per_mtok": "0.10",
+      "cache_write_5m_per_mtok": "2.50",
+      "cache_write_1h_per_mtok": "2.50"
+    },
+    "effective_from": "2026-11-17T00:00:00.000Z",
+    "source": "seed",
+    "note": "developers.openai.com/api/docs/pricing, checked 2026-11-23; in force from its release on 2026-11-17 (developers.openai.com/api/docs/changelog); cache reads at 0.05x input rather than the usual 0.1x; the short-context rate, which applies below 272K context"
   }
 ]
