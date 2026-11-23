@@ -446,16 +446,45 @@ mod tests {
             "claude-fable-5-1",
             "claude-sonnet-5",
             "claude-sonnet-5-5",
+            "claude-fable-5-2",
+            "claude-haiku-5-5",
             "gpt-5.6-terra",
             "gpt-5.5",
             "gpt-6-astra",
             "gpt-6.1-sol",
+            "gpt-6.1-terra",
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
         ] {
             assert!(
                 table.has_price(model),
                 "{model} is unpriced on a machine with an empty database"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn sonnet_5_5_reads_its_cache_at_the_old_price_until_the_cut_of_7_october() {
+        // Anthropic halved the cache-read price of a model it had already
+        // launched. Usage from 28 September to 6 October was billed at 0.20,
+        // so a total that applied today's 0.10 to it would be wrong.
+        let db = db().await;
+        let table = load_table(&db).await.unwrap();
+        let read_at = |at: &str| {
+            table
+                .lookup_at("claude-sonnet-5-5", at)
+                .unwrap()
+                .rates
+                .cache_read_per_mtok
+        };
+        assert_eq!(
+            read_at("2026-10-06T23:59:59.000Z"),
+            Decimal::from_str("0.20").unwrap()
+        );
+        assert_eq!(
+            read_at("2026-10-07T00:00:00.000Z"),
+            Decimal::from_str("0.10").unwrap()
+        );
     }
 
     #[tokio::test]
